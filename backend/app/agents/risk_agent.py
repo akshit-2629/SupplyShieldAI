@@ -78,7 +78,6 @@ class RiskAgent(BaseAgent):
               - completed_agents, failed_agents, errors, agent_results
         """
         from app.risk.pipeline import RiskPipeline
-        from app.db.session import SessionLocal
 
         news_events = state.get("news_events", [])
 
@@ -87,7 +86,45 @@ class RiskAgent(BaseAgent):
         )
 
         if not news_events:
-            logger.warning("[risk_agent] No news events to assess (empty news_events)")
+            # If no events from news_agent, load from Supabase directly
+            logger.info("[risk_agent] No news_events in state — loading from Supabase")
+            try:
+                from app.db.supabase_client import get_supabase
+                sb = get_supabase()
+                res = (
+                    sb.table("news_articles")
+                    .select(
+                        "id,title,url,source_name,severity,severity_score,event_type,"
+                        "country_codes,industry_tags,entities,published_at,collected_at"
+                    )
+                    .eq("is_disruption", True)
+                    .order("collected_at", desc=True)
+                    .limit(100)
+                    .execute()
+                )
+                rows = res.data or []
+                news_events = [
+                    {
+                        "id":            r.get("id", ""),
+                        "title":         r.get("title", ""),
+                        "url":           r.get("url", ""),
+                        "source":        r.get("source_name", ""),
+                        "countries":     r.get("country_codes") or [],
+                        "industries":    r.get("industry_tags") or [],
+                        "severity":      r.get("severity", "NONE"),
+                        "severity_score": float(r.get("severity_score") or 0),
+                        "event_type":    r.get("event_type"),
+                        "entities":      r.get("entities") or {},
+                        "published_at":  r.get("published_at"),
+                        "collected_at":  r.get("collected_at"),
+                    }
+                    for r in rows
+                ]
+                logger.info(f"[risk_agent] Loaded {len(news_events)} events from Supabase")
+            except Exception as exc:
+                logger.warning(f"[risk_agent] Supabase load failed: {exc}")
+
+        if not news_events:
             return {
                 "risk_assessments": [],
                 "completed_agents": ["risk_agent"],
@@ -96,7 +133,7 @@ class RiskAgent(BaseAgent):
                 "agent_results": [{
                     "agent_id":    "risk_agent",
                     "status":      "success",
-                    "data":        {"scored": 0, "note": "no news events in state"},
+                    "data":        {"scored": 0, "note": "no news events found"},
                     "error":       None,
                     "duration_ms": 0,
                     "retry_count": 0,
@@ -104,28 +141,15 @@ class RiskAgent(BaseAgent):
                 }],
             }
 
-        db = SessionLocal()
         try:
             pipeline = RiskPipeline()
             result   = await pipeline.run(news_events)
 
-            # Persist assessments to DB
-            persisted_count = self._persist_assessments(db, result.assessments)
-            logger.info(
-                f"[risk_agent] Persisted {persisted_count}/{len(result.assessments)} "
-                f"assessments to DB"
-            )
-
             logger.info(
                 f"[risk_agent] Pipeline complete — "
                 f"scored={result.scored}, "
-                f"CRITICAL={result.critical_count}, "
-                f"HIGH={result.high_count}, "
-                f"MEDIUM={result.medium_count}, "
-                f"LOW={result.low_count}, "
-                f"avg_score={result.avg_risk_score:.1f}, "
-                f"avg_confidence={result.avg_confidence:.3f}, "
-                f"rules_triggered={result.rules_triggered}"
+                f"CRITICAL={result.critical_count}, HIGH={result.high_count}, "
+                f"avg_score={result.avg_risk_score:.1f}"
             )
 
             return {
@@ -146,7 +170,6 @@ class RiskAgent(BaseAgent):
                         "avg_risk_score":  round(result.avg_risk_score, 2),
                         "avg_confidence":  round(result.avg_confidence, 4),
                         "rules_triggered": result.rules_triggered,
-                        "persisted_to_db": persisted_count,
                         "pipeline_started_at":   result.started_at,
                         "pipeline_completed_at": result.completed_at,
                     },
@@ -160,8 +183,6 @@ class RiskAgent(BaseAgent):
         except Exception as exc:
             logger.exception(f"[risk_agent] Unhandled error: {exc}")
             raise   # BaseAgent.run() handles retry + failed_result
-        finally:
-            db.close()
 
     def _persist_assessments(self, db: Any, assessments: list) -> int:
         """
