@@ -1,0 +1,33 @@
+# System Files
+.DS_Store
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local environment variables
+.env
+.env*.local
+
+# Python envs and caches at any level
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Node modules and build outputs
+node_modules/
+dist/
+dist-ssr/
+build/
+out/
