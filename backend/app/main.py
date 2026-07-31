@@ -135,6 +135,7 @@ def favicon():
 
 
 @app.get("/", tags=["Root"])
+@app.head("/", tags=["Root"], include_in_schema=False)
 def read_root():
     """Root entrypoint — service identity and docs URL."""
     return {
