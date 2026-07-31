@@ -91,33 +91,74 @@ app = FastAPI(
     redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
 )
 
-# CORS Policy
+# ── CORS Policy ───────────────────────────────────────────────────────────────
 # allow_origins must be explicit (never "*") when allow_credentials=True —
 # browsers reject that combination per the CORS spec.
 #
-# In production  → only FRONTEND_URL (set via Render env var) is allowed.
+# In production  → only FRONTEND_URL (+ any ADDITIONAL_CORS_ORIGINS) is allowed.
 # In development → also accept the standard Vite localhost ports.
-_allowed_origins = [settings.FRONTEND_URL]
+#
+# ADDITIONAL_CORS_ORIGINS: comma-separated extra origins set in Render dashboard.
+# e.g.  https://supply-shield-ai-seven.vercel.app,https://supply-shield-ai.vercel.app
+_allowed_origins: list[str] = []
 
+# Primary frontend URL
+if settings.FRONTEND_URL:
+    _allowed_origins.append(settings.FRONTEND_URL)
+
+# Extra origins from env (handles preview deployments, custom domains, etc.)
+import os as _os
+_extra = _os.environ.get("ADDITIONAL_CORS_ORIGINS", "")
+for _o in _extra.split(","):
+    _o = _o.strip()
+    if _o and _o not in _allowed_origins:
+        _allowed_origins.append(_o)
+
+# Dev: also allow local Vite ports
 if settings.ENVIRONMENT != "production":
-    _allowed_origins += [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-    ]
+    for _local in [
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:5174", "http://127.0.0.1:5174",
+        "http://localhost:5175", "http://127.0.0.1:5175",
+    ]:
+        if _local not in _allowed_origins:
+            _allowed_origins.append(_local)
+
+logger.info(f"[cors] Allowed origins: {_allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# ── Fallback CORS middleware ───────────────────────────────────────────────────
+# Starlette's CORSMiddleware does NOT add headers when the app crashes with
+# an unhandled 500 before the route executes, or when Render's proxy returns
+# 502/503 during startup. This low-level middleware ensures the header is
+# always present so browsers show the real error instead of a generic CORS block.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
+
+class FallbackCORSMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        origin = request.headers.get("origin", "")
+        response: StarletteResponse = await call_next(request)
+        if origin in _allowed_origins:
+            response.headers.setdefault("Access-Control-Allow-Origin", origin)
+            response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+            response.headers.setdefault("Vary", "Origin")
+        return response
+
+app.add_middleware(FallbackCORSMiddleware)
 
 # Request performance logger
 app.add_middleware(RequestLoggingMiddleware)
+
 
 # Global exception handlers
 register_exception_handlers(app)
