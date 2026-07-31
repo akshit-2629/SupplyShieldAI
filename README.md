@@ -179,36 +179,137 @@ Enterprise optimization:
 
 ```
 ShieldSupplyAi/
-├── backend/            # FastAPI, Database setup, API routes, and Uvicorn server
-├── frontend/           # Vite + React client (plain JavaScript + Tailwind CSS)
-└── database/           # PostgreSQL initialization scripts and triggers
+├── backend/            # FastAPI app — API routes, AI agents, orchestrator
+│   ├── app/
+│   │   ├── agents/         # 6 AI agents (news, risk, graph, supplier, inventory, recommendation)
+│   │   ├── api/v1/         # REST API endpoints
+│   │   ├── core/           # Config, security, logging, exceptions
+│   │   ├── orchestrator/   # Master Orchestrator + event bus
+│   │   └── supplier_portal/ # Supplier Portal backend module
+│   ├── alembic/            # Database migrations
+│   ├── requirements.txt
+│   └── .env.example
+├── frontend/           # Vite + React — admin dashboard + supplier portal
+│   ├── src/
+│   │   ├── pages/          # Admin pages + supplier portal pages
+│   │   ├── components/     # Shared UI components
+│   │   ├── services/       # API service layer (supplierApi.js, api.js)
+│   │   ├── context/        # Auth context providers
+│   │   └── lib/            # Supabase client, React Query client
+│   └── .env.example
+└── database/           # PostgreSQL schema SQL (37 tables, RLS, indexes)
 ```
+
+---
+
+## 🛠️ Prerequisites
+
+Before running the project, ensure you have:
+
+| Tool | Minimum Version | Notes |
+|---|---|---|
+| **Node.js** | 20.x | `node -v` |
+| **Python** | 3.11+ | `python3 --version` |
+| **pip** | latest | `pip install --upgrade pip` |
+| **Supabase account** | — | [supabase.com](https://supabase.com) — free tier works |
+| **Google OAuth credentials** | — | [Google Cloud Console](https://console.cloud.google.com) |
+| **Gemini API key** | — | [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| **Tavily API key** | — | [app.tavily.com](https://app.tavily.com) (News Intelligence) |
 
 ---
 
 ## 🛠️ Dev Setup Guide
 
-### Backend setup
-1. Navigate to `/backend` and configure your environment variables:
-   ```bash
-   cp .env.example .env
-   ```
-2. Populate the required values inside `.env` (such as `SUPABASE_JWT_SECRET`, `SUPABASE_URL`, and Google Client details).
-3. Activate the virtual environment:
-   ```bash
-   source venv/bin/activate
-   ```
-4. Start the API server:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
+### 1 · Backend setup
 
-### Frontend setup
-1. Navigate to `/frontend` and copy the configuration file:
-   ```bash
-   cp .env.example .env
-   ```
-2. Run the client development server:
-   ```bash
-   npm run dev
-   ```
+```bash
+cd backend
+
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate          # macOS / Linux
+# venv\Scripts\activate           # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment variables
+cp .env.example .env
+```
+
+Edit `backend/.env` and fill in the following:
+
+| Variable | Where to find it |
+|---|---|
+| `SUPABASE_URL` | Supabase Dashboard → Settings → API |
+| `SUPABASE_ANON_KEY` | Supabase Dashboard → Settings → API |
+| `SUPABASE_JWT_SECRET` | Supabase Dashboard → Settings → API → JWT Secret |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Dashboard → Settings → API → service_role |
+| `DATABASE_URL` | Supabase Dashboard → Settings → Database → Connection string (URI) |
+| `GOOGLE_CLIENT_ID` | Google Cloud Console → Credentials → OAuth 2.0 Client ID |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud Console → Credentials → OAuth 2.0 Client Secret |
+| `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
+| `TAVILY_API_KEY` | [app.tavily.com](https://app.tavily.com) |
+
+```bash
+# Start the API server
+uvicorn app.main:app --reload
+```
+
+Verify: open `http://localhost:8000/` — you should see:
+```json
+{ "service": "SupplyShield AI", "status": "production-ready" }
+```
+
+Interactive API docs: `http://localhost:8000/docs`
+
+---
+
+### 2 · Frontend setup
+
+```bash
+cd frontend
+
+# Install dependencies
+npm install
+
+# Configure environment variables
+cp .env.example .env
+```
+
+Edit `frontend/.env` and fill in:
+
+| Variable | Where to find it |
+|---|---|
+| `VITE_SUPABASE_URL` | Same as backend `SUPABASE_URL` |
+| `VITE_SUPABASE_ANON_KEY` | Same as backend `SUPABASE_ANON_KEY` — safe to expose (anon/public key) |
+| `VITE_API_URL` | `http://localhost:8000/api/v1` (default — update for production) |
+
+```bash
+# Start the development server
+npm run dev
+```
+
+Verify: open `http://localhost:5173/` — you should see the SupplyShield AI landing page.
+
+---
+
+### 3 · Database setup
+
+Run `database/supplyshield_complete_schema.sql` in your Supabase SQL Editor:
+
+1. Open [Supabase SQL Editor](https://supabase.com/dashboard/project/_/sql/new)
+2. Paste the contents of `database/supplyshield_complete_schema.sql`
+3. Click **Run**
+
+This creates all 37 tables, RLS policies, indexes, and triggers.
+
+---
+
+## 🔐 Security Notes
+
+- **Never commit `.env` files** — all secrets are gitignored by default
+- The Supabase **anon key** is safe in frontend code (it is a public key restricted by Row Level Security)
+- The Supabase **service_role key** must only ever live in the backend `.env` — never in frontend code
+- JWT tokens are validated on every protected API endpoint using `SUPABASE_JWT_SECRET`
+

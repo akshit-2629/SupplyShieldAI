@@ -3,24 +3,26 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, AlertTriangle, Globe, Network, Building2,
   FileSearch, Package, Stars, Cpu, FileText, Bell, Settings,
-  LogOut, ShieldCheck, ChevronLeft, ChevronRight
+  LogOut, ShieldCheck, ChevronLeft, ChevronRight, Users, Briefcase,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';
 import { useAuth } from '../../context/AuthContext';
 
 const navItems = [
-  { to: '/dashboard',          label: 'Dashboard',         icon: LayoutDashboard },
-  { to: '/disruption-monitor', label: 'Disruption Monitor', icon: AlertTriangle },
-  { to: '/risk-map',           label: 'Global Risk Map',   icon: Globe },
-  { to: '/knowledge-graph',    label: 'Knowledge Graph',   icon: Network },
-  { to: '/suppliers',          label: 'Suppliers',         icon: Building2 },
-  { to: '/incidents',          label: 'Incidents',         icon: FileSearch },
-  { to: '/inventory',          label: 'Inventory Impact',  icon: Package },
-  { to: '/recommendations',    label: 'Recommendations',   icon: Stars },
-  { to: '/orchestration',      label: 'AI Orchestration',  icon: Cpu },
-  { to: '/reports',            label: 'Reports',           icon: FileText },
-  { to: '/alerts',             label: 'Alerts',            icon: Bell },
-  { to: '/settings',           label: 'Settings',          icon: Settings },
+  { to: '/dashboard',           label: 'Dashboard',           icon: LayoutDashboard },
+  { to: '/business-management', label: 'Business Management', icon: Briefcase },
+  { to: '/disruption-monitor',  label: 'Disruption Monitor',  icon: AlertTriangle },
+  { to: '/risk-map',            label: 'Global Risk Map',    icon: Globe },
+  { to: '/knowledge-graph',     label: 'Knowledge Graph',    icon: Network },
+  { to: '/suppliers',           label: 'Suppliers',          icon: Building2 },
+  { to: '/supplier-management', label: 'Supplier Mgmt',     icon: Users },
+  { to: '/incidents',           label: 'Incidents',          icon: FileSearch },
+  { to: '/inventory',           label: 'Inventory Impact',   icon: Package },
+  { to: '/recommendations',     label: 'Recommendations',    icon: Stars },
+  { to: '/orchestration',       label: 'AI Orchestration',   icon: Cpu },
+  { to: '/reports',             label: 'Reports',            icon: FileText },
+  { to: '/alerts',              label: 'Alerts',             icon: Bell },
+  { to: '/settings',            label: 'Settings',           icon: Settings },
 ];
 
 export default function Sidebar() {

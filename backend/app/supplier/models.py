@@ -185,15 +185,20 @@ class SupplierProfile:
     metadata:       Dict[str, Any]   = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "supplier_id":          self.supplier_id,
             "name":                 self.name,
+            "company_name":         self.name,
             "country_code":         self.country_code,
             "tier":                 self.tier.value,
             "industries":           self.industries,
             "revenue_exposure_pct": round(self.revenue_exposure_pct, 2),
             "kpi":                  self.kpi.to_dict(),
             "health":               self.health.to_dict(),
+            # Flat helpers for frontend compatibility
+            "health_score":         round(self.health.health_score, 2),
+            "reliability_score":    round(self.kpi.reliability_score, 2),
+            "formula_breakdown":    self.health.formula_breakdown,
             "risk_score":           round(self.risk_score, 2),
             "risk_level":           self.risk_level,
             "geo_risk":             round(self.geo_risk, 3),
@@ -210,6 +215,12 @@ class SupplierProfile:
             "evaluated_at":         self.evaluated_at,
             "metadata":             self.metadata,
         }
+        if isinstance(self.metadata, dict):
+            for k, v in self.metadata.items():
+                if k not in d or d[k] is None:
+                    d[k] = v
+        return d
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

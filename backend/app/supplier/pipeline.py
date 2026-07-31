@@ -90,14 +90,15 @@ class SupplierPipeline:
         self,
         risk_assessments: Optional[List[Dict[str, Any]]] = None,
         graph_snapshot:   Optional[Dict[str, Any]]       = None,
+        suppliers_data:   Optional[List[Dict[str, Any]]] = None,
         execution_id:     str                            = "",
     ) -> SupplierPipelineResult:
         """Run the full pipeline and return a SupplierPipelineResult."""
 
         evaluated_at = datetime.now(timezone.utc).isoformat()
 
-        # ── Step 1: Build base profiles from seed ─────────────────────────────
-        profiles = self._build_base_profiles()
+        # ── Step 1: Build base profiles from database items ────────────────────
+        profiles = self._build_base_profiles(suppliers_data or [])
 
         # ── Step 2: Overlay Phase 4 risk data ────────────────────────────────
         risk_map = self._build_risk_map(risk_assessments or [])
@@ -173,17 +174,18 @@ class SupplierPipeline:
         # ── Step 10: Build summary ────────────────────────────────────────────
         summary = {
             "total_scored":      len(profiles),
-            "fleet_health_index": aggregation["fleet_health_index"],
-            "fleet_health_label": aggregation["fleet_health_label"],
-            "tier_1_count":      aggregation["tier_distribution"].get("TIER_1", {}).get("count", 0),
-            "tier_2_count":      aggregation["tier_distribution"].get("TIER_2", {}).get("count", 0),
-            "tier_3_count":      aggregation["tier_distribution"].get("TIER_3", {}).get("count", 0),
-            "critical_alerts":   aggregation["alert_count"],
+            "fleet_health_index": aggregation.get("fleet_health_index", 0.0),
+            "fleet_health_label": aggregation.get("fleet_health_label", "NO_DATA"),
+            "tier_1_count":      aggregation.get("tier_distribution", {}).get("TIER_1", {}).get("count", 0),
+            "tier_2_count":      aggregation.get("tier_distribution", {}).get("TIER_2", {}).get("count", 0),
+            "tier_3_count":      aggregation.get("tier_distribution", {}).get("TIER_3", {}).get("count", 0),
+            "critical_alerts":   aggregation.get("alert_count", 0),
             "top_supplier":      ranked[0].name if ranked else "N/A",
             "top_supplier_score": ranked[0].health.health_score if ranked else 0.0,
             "execution_id":      execution_id,
             "evaluated_at":      evaluated_at,
         }
+
 
         logger.info(
             f"[supplier_pipeline] Done — "
@@ -203,18 +205,30 @@ class SupplierPipeline:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _build_base_profiles(self) -> List[SupplierProfile]:
+    def _build_base_profiles(self, suppliers_data: List[Dict[str, Any]]) -> List[SupplierProfile]:
         profiles = []
-        for seed in SEED_SUPPLIERS:
-            kpi = KPIScore(**seed["kpi"])
+        for s in suppliers_data:
+            default_kpi = {
+                "reliability_score": float(s.get("reliability_score", 80.0)),
+                "quality_score":     float(s.get("quality_score", 85.0)),
+                "lead_time_score":   float(s.get("lead_time_score", 75.0)),
+                "cost_efficiency":   float(s.get("cost_efficiency", 75.0)),
+                "compliance_score":  float(s.get("compliance_score", 90.0)),
+                "responsiveness":    float(s.get("responsiveness", 80.0)),
+                "flexibility":       float(s.get("flexibility", 70.0)),
+            }
+            kpi_dict = s.get("kpi", default_kpi)
+            kpi = KPIScore(**kpi_dict)
             p   = SupplierProfile(
-                supplier_id          = seed["supplier_id"],
-                name                 = seed["name"],
-                country_code         = seed["country_code"],
-                revenue_exposure_pct = seed["revenue_exposure_pct"],
-                industries           = seed.get("industries", []),
+                supplier_id          = s.get("supplier_id", s.get("id", "supplier::UNKNOWN")),
+                name                 = s.get("name", s.get("company_name", "Unknown Supplier")),
+                country_code         = s.get("country_code", s.get("headquarters_country", "US")),
+                revenue_exposure_pct = float(s.get("revenue_exposure_pct", 5.0)),
+                industries           = s.get("industries", []),
                 kpi                  = kpi,
+                metadata             = s,
             )
+
             profiles.append(p)
         return profiles
 

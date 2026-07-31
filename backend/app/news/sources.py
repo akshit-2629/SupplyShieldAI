@@ -212,6 +212,13 @@ EVENT_TYPE_KEYWORDS: Dict[str, List[str]] = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 INDUSTRY_KEYWORDS: Dict[str, List[str]] = {
+    "electronics_manufacturing": [
+        "semiconductor", "chip", "pcb", "display", "oled", "dram", "memory",
+        "microcontroller", "lithium battery", "chip shortage", "export ban",
+        "factory fire", "earthquake", "port congestion", "trade restrictions",
+        "power outage", "wafer", "fab", "substrate", "mlcc", "passive components",
+        "microchip", "integrated circuit", "foundry", "silicon", "sensor"
+    ],
     "semiconductor": [
         "chip", "semiconductor", "wafer", "fab", "TSMC", "Intel", "Samsung",
         "Nvidia", "AMD", "GPU", "CPU", "microprocessor", "foundry", "silicon",
@@ -258,6 +265,44 @@ INDUSTRY_KEYWORDS: Dict[str, List[str]] = {
         "restocking", "out of stock",
     ],
 }
+
+
+def get_industry_rss_sources(industry: str = "Electronics Manufacturing", component_names: List[str] = None) -> List[NewsSource]:
+    """
+    Build targeted Google News RSS feeds specific to the manufacturer's primary industry
+    and registered component keywords.
+    """
+    sources = list(SUPPLY_CHAIN_RSS_SOURCES)
+    ind_clean = (industry or "Electronics Manufacturing").lower()
+
+    if "electronic" in ind_clean or "semiconductor" in ind_clean:
+        sources.append(NewsSource(
+            name="Google News – Electronics & Semiconductors",
+            rss_url="https://news.google.com/rss/search?q=semiconductor+chip+shortage+PCB+DRAM+OLED&hl=en-US&gl=US&ceid=US:en",
+            base_url="https://news.google.com",
+            credibility_score=8.5,
+            category="electronics_manufacturing"
+        ))
+        sources.append(NewsSource(
+            name="Google News – Component Trade Restrictions & Fabs",
+            rss_url="https://news.google.com/rss/search?q=export+ban+wafer+fab+lithium+battery+disruption&hl=en-US&gl=US&ceid=US:en",
+            base_url="https://news.google.com",
+            credibility_score=8.5,
+            category="electronics_manufacturing"
+        ))
+
+    if component_names:
+        for c in component_names[:3]:
+            safe_c = c.replace(" ", "+")
+            sources.append(NewsSource(
+                name=f"Google News – {c} Supply",
+                rss_url=f"https://news.google.com/rss/search?q={safe_c}+supply+chain+shortage&hl=en-US&gl=US&ceid=US:en",
+                base_url="https://news.google.com",
+                credibility_score=8.0,
+                category="components"
+            ))
+
+    return sources
 
 
 # ─────────────────────────────────────────────────────────────────────────────

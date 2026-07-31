@@ -69,10 +69,30 @@ class NewsAgent(BaseAgent):
 
         db = SessionLocal()
         try:
-            logger.info("[news_agent] Starting pipeline (real data collection)...")
+            logger.info("[news_agent] Fetching tenant industry context from PostgreSQL...")
+            from app.manufacturer.models import ManufacturerCompany, ManufacturerComponent, ManufacturerProduct, ManufacturerFactory, ManufacturerWarehouse
+            from app.supplier_management.models import SupplierInvitation
+
+            company = db.query(ManufacturerCompany).first()
+            components = db.query(ManufacturerComponent).all()
+            products = db.query(ManufacturerProduct).all()
+            factories = db.query(ManufacturerFactory).all()
+            warehouses = db.query(ManufacturerWarehouse).all()
+            suppliers = db.query(SupplierInvitation).all()
+
+            tenant_context = {
+                "industry": company.industry if company else "Electronics Manufacturing",
+                "components": [c.component_name for c in components],
+                "products": [p.product_name for p in products],
+                "suppliers": [s.supplier_company_name for s in suppliers if s.supplier_company_name],
+                "countries": list(set([f.country for f in factories if f.country] + [w.country for w in warehouses if w.country]))
+            }
+
+
+            logger.info(f"[news_agent] Industry Primary Context: '{tenant_context['industry']}' | Components: {len(components)} | Suppliers: {len(suppliers)}")
 
             pipeline = NewsPipeline()
-            result   = await pipeline.run(db=db)
+            result   = await pipeline.run(db=db, tenant_context=tenant_context)
 
             if result.errors:
                 logger.warning(f"[news_agent] Pipeline had {len(result.errors)} error(s)")

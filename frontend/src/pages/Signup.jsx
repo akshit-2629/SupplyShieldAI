@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, Link } from 'react-router-dom';
-import { Eye, EyeOff, ShieldCheck, Loader, AlertCircle, CheckCircle, ArrowRight, Info } from 'lucide-react';
+import { Eye, EyeOff, ShieldCheck, Loader, AlertCircle, CheckCircle, ArrowRight, Info, BarChart3 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 
@@ -85,7 +85,8 @@ export default function Signup() {
     // Supabase may auto-confirm or require email confirmation depending on project settings
     if (data.user && data.session) {
       // Email confirmations disabled — user is immediately signed in
-      navigate('/dashboard', { replace: true });
+      // New manufacturers always go to /setup wizard first
+      navigate('/setup', { replace: true });
     } else {
       setSuccess('Account created! Check your email to confirm your address, then sign in.');
     }
@@ -122,8 +123,12 @@ export default function Signup() {
           <div style={{ width: 56, height: 56, background: 'linear-gradient(135deg, #2563EB, #7C3AED)', borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }} className="animate-float">
             <ShieldCheck size={28} color="white" strokeWidth={2} />
           </div>
-          <h1 style={{ fontSize: 24, fontWeight: 800, color: '#111827', marginBottom: 6 }}>Create your account</h1>
-          <p style={{ fontSize: 14, color: '#9CA3AF' }}>Start protecting your supply chain with AI</p>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 20, padding: '4px 12px', marginBottom: 12 }}>
+            <BarChart3 size={13} color="#2563EB" />
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#2563EB' }}>Manufacturer Registration</span>
+          </div>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: '#111827', marginBottom: 6 }}>Create your manufacturer account</h1>
+          <p style={{ fontSize: 14, color: '#9CA3AF' }}>Set up SupplyShield AI for your organisation</p>
         </motion.div>
 
         {/* Card */}
@@ -270,7 +275,7 @@ export default function Signup() {
         </motion.p>
         <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.45 }}
           style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: '#9CA3AF' }}>
-          <Link to="/" style={{ color: '#9CA3AF' }}>← Back to homepage</Link>
+          <Link to="/role-select" style={{ color: '#9CA3AF' }}>← Back to Role Selection</Link>
         </motion.p>
       </div>
     </div>

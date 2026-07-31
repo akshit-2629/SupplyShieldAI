@@ -1,16 +1,7 @@
 """
 Orchestrator REST API Endpoints.
 
-Provides HTTP access to the MasterOrchestrator for:
-  • Triggering workflow runs
-  • Listing and inspecting workflow runs (active + DB history)
-  • Viewing agent health status
-  • Toggling individual agents on/off
-  • Inspecting event bus history
-  • Getting full system status
-
-All endpoints are prefix /orchestrator and tagged "Master Orchestrator"
-for the auto-generated Swagger/OpenAPI docs.
+PostgreSQL single source of truth with strict tenant isolation.
 """
 
 from __future__ import annotations
@@ -20,8 +11,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from app.db.supabase_client import get_supabase
+from app.db.session import get_db
+from app.core.security import get_current_user, UserPrincipal
+from app.db.models.workflow_run import WorkflowRun
 from app.orchestrator.orchestrator import MasterOrchestrator
 
 logger = logging.getLogger("api.orchestrator")
@@ -29,37 +23,30 @@ logger = logging.getLogger("api.orchestrator")
 router = APIRouter(prefix="/orchestrator", tags=["Master Orchestrator"])
 
 
-# ── Dependency injection ───────────────────────────────────────────────────────
-
 def get_orchestrator() -> MasterOrchestrator:
     return MasterOrchestrator.get_instance()
 
-
-# ── Request/Response schemas ───────────────────────────────────────────────────
 
 class TriggerRequest(BaseModel):
     trigger_type: str  = "manual"
     payload:      dict = {}
 
 
-# ── Workflow Endpoints ────────────────────────────────────────────────────────
-
 @router.post(
     "/trigger",
     summary="Trigger a workflow run",
-    description=(
-        "Manually trigger a full 6-agent SupplyShield AI workflow. "
-        "Returns immediately with the execution summary once all agents complete."
-    ),
 )
 async def trigger_workflow(
     body:         TriggerRequest           = TriggerRequest(),
+    current_user: UserPrincipal            = Depends(get_current_user),
     orchestrator: MasterOrchestrator       = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     try:
+        payload = body.payload or {}
+        payload["user_id"] = current_user.user_id
         result = await orchestrator.trigger(
             trigger_type=body.trigger_type,
-            payload=body.payload,
+            payload=payload,
         )
         return {"success": True, "result": result}
     except RuntimeError as e:
@@ -74,6 +61,7 @@ async def trigger_workflow(
     summary="List active (in-progress) workflow runs",
 )
 def get_active_runs(
+    current_user: UserPrincipal      = Depends(get_current_user),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     return {"active_runs": orchestrator.get_active_runs()}
@@ -84,28 +72,27 @@ def get_active_runs(
     summary="List workflow run history from the database",
 )
 def get_workflow_runs(
-    limit: int = Query(default=20, ge=1, le=100),
+    limit:        int           = Query(default=20, ge=1, le=100),
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
-    sb = get_supabase()
     try:
-        res = (
-            sb.table("workflow_runs")
-            .select("execution_id,trigger_type,status,started_at,completed_at,agent_results")
-            .order("started_at", desc=True)
+        runs = (
+            db.query(WorkflowRun)
+            .order_by(WorkflowRun.started_at.desc())
             .limit(limit)
-            .execute()
+            .all()
         )
-        runs = res.data or []
         return {
             "total": len(runs),
             "runs": [
                 {
-                    "execution_id": r.get("execution_id"),
-                    "trigger_type": r.get("trigger_type"),
-                    "status":       r.get("status"),
-                    "started_at":   r.get("started_at"),
-                    "completed_at": r.get("completed_at"),
-                    "agent_count":  len(r.get("agent_results") or []),
+                    "execution_id": r.execution_id,
+                    "trigger_type": r.trigger_type,
+                    "status":       r.status,
+                    "started_at":   r.started_at.isoformat() if r.started_at else None,
+                    "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                    "agent_count":  len(r.agent_results or []),
                 }
                 for r in runs
             ],
@@ -121,28 +108,32 @@ def get_workflow_runs(
 )
 def get_workflow_run_detail(
     execution_id: str,
+    current_user: UserPrincipal      = Depends(get_current_user),
+    db:           Session            = Depends(get_db),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
-    # Check in-memory active runs first
     for run in orchestrator.get_active_runs():
         if run["execution_id"] == execution_id:
             return {"source": "active", "run": run}
 
-    # Fall back to Supabase REST
-    sb = get_supabase()
-    try:
-        res = (
-            sb.table("workflow_runs")
-            .select("*")
-            .eq("execution_id", execution_id)
-            .limit(1)
-            .execute()
-        )
-        rows = res.data or []
-        if rows:
-            return {"source": "database", **rows[0]}
-    except Exception as e:
-        logger.warning(f"DB lookup failed for execution_id={execution_id}: {e}")
+    run = (
+        db.query(WorkflowRun)
+        .filter((WorkflowRun.execution_id == execution_id) | (WorkflowRun.id == execution_id))
+        .first()
+    )
+
+    if run:
+        return {
+            "source": "database",
+            "id": run.id,
+            "execution_id": run.execution_id,
+            "trigger_type": run.trigger_type,
+            "status": run.status,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            "agent_results": run.agent_results or [],
+            "trigger_payload": run.trigger_payload or {},
+        }
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -150,13 +141,12 @@ def get_workflow_run_detail(
     )
 
 
-# ── Agent Health Endpoints ────────────────────────────────────────────────────
-
 @router.get(
     "/agents/health",
     summary="Get health status of all registered agents",
 )
 def get_agent_health(
+    current_user: UserPrincipal      = Depends(get_current_user),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     agents = orchestrator.get_agent_health()
@@ -174,6 +164,7 @@ def get_agent_health(
 async def toggle_agent(
     agent_id:     str,
     enable:       bool              = Query(..., description="true=enable, false=disable"),
+    current_user: UserPrincipal     = Depends(get_current_user),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     if enable:
@@ -189,18 +180,17 @@ async def toggle_agent(
     return {"agent_id": agent_id, "enabled": enable}
 
 
-# ── Event Bus & System Status ─────────────────────────────────────────────────
-
 @router.get(
     "/events",
     summary="Get recent events from the event bus",
 )
 def get_event_history(
     limit:        int              = Query(default=50, ge=1, le=500),
+    current_user: UserPrincipal    = Depends(get_current_user),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     return {
-        "events":   orchestrator.get_event_history(limit=limit),
+        "events":    orchestrator.get_event_history(limit=limit),
         "bus_stats": orchestrator.get_event_bus_stats(),
     }
 
@@ -210,6 +200,7 @@ def get_event_history(
     summary="Get the workflow execution plan (topological order)",
 )
 def get_workflow_plan(
+    current_user: UserPrincipal    = Depends(get_current_user),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     return {
@@ -223,6 +214,7 @@ def get_workflow_plan(
     summary="Get full orchestrator system status",
 )
 def get_orchestrator_status(
+    current_user: UserPrincipal    = Depends(get_current_user),
     orchestrator: MasterOrchestrator = Depends(get_orchestrator),
 ) -> Dict[str, Any]:
     agents = orchestrator.get_agent_health()

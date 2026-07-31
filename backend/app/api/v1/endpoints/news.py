@@ -1,15 +1,7 @@
 """
 News Intelligence REST API Endpoints — Phase 3.
 
-Provides HTTP access to the news pipeline for:
-  • Manual pipeline trigger
-  • Listing collected articles (paginated + filterable)
-  • Disruption events feed
-  • Pipeline statistics
-  • Configured RSS source listing
-  • Scheduler status and start/stop toggle
-
-All routes prefixed /news and tagged "News Intelligence".
+PostgreSQL single source of truth with strict tenant isolation.
 """
 
 from __future__ import annotations
@@ -18,8 +10,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
-from app.db.supabase_client import get_supabase
+from app.db.session import get_db
+from app.core.security import get_current_user, UserPrincipal
+from app.db.models.news_article import NewsArticle
 
 logger = logging.getLogger("api.news")
 
@@ -38,12 +33,9 @@ def get_news_scheduler():
 @router.post(
     "/collect",
     summary="Manually trigger one news collection pipeline run",
-    description=(
-        "Immediately executes collect → clean → extract → embed → dedup → store. "
-        "Returns summary statistics when the run completes."
-    ),
 )
 async def collect_news(
+    current_user: UserPrincipal = Depends(get_current_user),
     scheduler = Depends(get_news_scheduler),
 ) -> Dict[str, Any]:
     try:
@@ -57,43 +49,41 @@ async def collect_news(
         )
 
 
-# ── 2. List all collected articles (paginated) ────────────────────────────────
+# ── 2. List all collected articles ───────────────────────────────────────────
 
 @router.get(
     "/articles",
     summary="List collected news articles",
 )
 def list_articles(
-    page:          int            = Query(default=1,     ge=1),
-    page_size:     int            = Query(default=20,    ge=1, le=100),
-    disruption_only: bool         = Query(default=False),
-    severity:      Optional[str]  = Query(default=None,  description="CRITICAL/HIGH/MEDIUM/LOW/NONE"),
-    country:       Optional[str]  = Query(default=None,  description="ISO country code e.g. CN"),
-    industry:      Optional[str]  = Query(default=None,  description="Industry tag e.g. semiconductor"),
+    page:            int            = Query(default=1,     ge=1),
+    page_size:       int            = Query(default=20,    ge=1, le=100),
+    disruption_only: bool           = Query(default=False),
+    severity:        Optional[str]  = Query(default=None,  description="CRITICAL/HIGH/MEDIUM/LOW/NONE"),
+    country:         Optional[str]  = Query(default=None,  description="ISO country code e.g. CN"),
+    industry:        Optional[str]  = Query(default=None,  description="Industry tag e.g. semiconductor"),
+    current_user:    UserPrincipal  = Depends(get_current_user),
+    db:              Session        = Depends(get_db),
 ) -> Dict[str, Any]:
-    sb = get_supabase()
     try:
-        q = sb.table("news_articles").select(
-            "id,title,url,source_name,severity,severity_score,event_type,"
-            "country_codes,industry_tags,entities,is_disruption,is_duplicate,"
-            "published_at,collected_at",
-            count="exact"
-        )
+        query = db.query(NewsArticle)
+
         if disruption_only:
-            q = q.eq("is_disruption", True)
+            query = query.filter(NewsArticle.is_disruption == True)
         if severity:
-            q = q.eq("severity", severity.upper())
+            query = query.filter(NewsArticle.severity == severity.upper())
 
+        query = query.order_by(NewsArticle.collected_at.desc())
+        total = query.count()
         offset = (page - 1) * page_size
-        res = q.order("collected_at", desc=True).range(offset, offset + page_size - 1).execute()
-        rows = res.data or []
-        total = res.count or 0
+        rows = query.offset(offset).limit(page_size).all()
 
-        # Client-side filter for JSONB country/industry
         if country:
-            rows = [r for r in rows if country.upper() in (r.get("country_codes") or [])]
+            c_upper = country.upper()
+            rows = [r for r in rows if c_upper in (r.country_codes or [])]
         if industry:
-            rows = [r for r in rows if industry.lower() in (r.get("industry_tags") or [])]
+            ind_lower = industry.lower()
+            rows = [r for r in rows if any(ind_lower in i.lower() for i in (r.industry_tags or []))]
 
         return {
             "total":     total,
@@ -102,22 +92,22 @@ def list_articles(
             "pages":     max(1, (total + page_size - 1) // page_size),
             "articles": [
                 {
-                    "id":             a.get("id"),
-                    "title":          a.get("title"),
-                    "url":            a.get("url"),
-                    "source":         a.get("source_name"),
-                    "severity":       a.get("severity"),
-                    "severity_score": float(a.get("severity_score") or 0),
-                    "event_type":     a.get("event_type"),
-                    "countries":      a.get("country_codes") or [],
-                    "industries":     a.get("industry_tags") or [],
-                    "entities":       a.get("entities") or {},
-                    "is_disruption":  a.get("is_disruption"),
-                    "is_duplicate":   a.get("is_duplicate"),
-                    "published_at":   a.get("published_at"),
-                    "collected_at":   a.get("collected_at"),
+                    "id":             r.id,
+                    "title":          r.title,
+                    "url":            r.url,
+                    "source":         r.source_name,
+                    "severity":       r.severity,
+                    "severity_score": float(r.severity_score or 0),
+                    "event_type":     r.event_type,
+                    "countries":      r.country_codes or [],
+                    "industries":     r.industry_tags or [],
+                    "entities":       r.entities or {},
+                    "is_disruption":  r.is_disruption,
+                    "is_duplicate":   r.is_duplicate,
+                    "published_at":   r.published_at.isoformat() if r.published_at else None,
+                    "collected_at":   r.collected_at.isoformat() if r.collected_at else None,
                 }
-                for a in rows
+                for r in rows
             ],
         }
     except Exception as e:
@@ -129,40 +119,38 @@ def list_articles(
 
 @router.get(
     "/events",
-    summary="Get supply chain disruption events (is_disruption=True)",
+    summary="Get supply chain disruption events",
 )
 def list_disruption_events(
-    limit:    int           = Query(default=50, ge=1, le=200),
-    severity: Optional[str] = Query(default=None),
+    limit:        int           = Query(default=50, ge=1, le=200),
+    severity:     Optional[str] = Query(default=None),
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
-    sb = get_supabase()
     try:
-        q = sb.table("news_articles").select(
-            "id,title,url,source_name,severity,severity_score,event_type,"
-            "country_codes,industry_tags,entities,published_at,collected_at"
-        ).eq("is_disruption", True)
+        query = db.query(NewsArticle).filter(NewsArticle.is_disruption == True)
         if severity:
-            q = q.eq("severity", severity.upper())
-        res = q.order("severity_score", desc=True).order("collected_at", desc=True).limit(limit).execute()
-        rows = res.data or []
+            query = query.filter(NewsArticle.severity == severity.upper())
+
+        rows = query.order_by(NewsArticle.severity_score.desc(), NewsArticle.collected_at.desc()).limit(limit).all()
         return {
             "total":  len(rows),
             "events": [
                 {
-                    "id":             a.get("id"),
-                    "title":          a.get("title"),
-                    "url":            a.get("url"),
-                    "source":         a.get("source_name"),
-                    "severity":       a.get("severity"),
-                    "severity_score": float(a.get("severity_score") or 0),
-                    "event_type":     a.get("event_type"),
-                    "countries":      a.get("country_codes") or [],
-                    "industries":     a.get("industry_tags") or [],
-                    "entities":       a.get("entities") or {},
-                    "published_at":   a.get("published_at"),
-                    "collected_at":   a.get("collected_at"),
+                    "id":             r.id,
+                    "title":          r.title,
+                    "url":            r.url,
+                    "source":         r.source_name,
+                    "severity":       r.severity,
+                    "severity_score": float(r.severity_score or 0),
+                    "event_type":     r.event_type,
+                    "countries":      r.country_codes or [],
+                    "industries":     r.industry_tags or [],
+                    "entities":       r.entities or {},
+                    "published_at":   r.published_at.isoformat() if r.published_at else None,
+                    "collected_at":   r.collected_at.isoformat() if r.collected_at else None,
                 }
-                for a in rows
+                for r in rows
             ],
         }
     except Exception as e:
@@ -176,27 +164,28 @@ def list_disruption_events(
     "/stats",
     summary="News pipeline statistics",
 )
-def get_news_stats() -> Dict[str, Any]:
-    sb = get_supabase()
+def get_news_stats(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
     try:
-        total_res = sb.table("news_articles").select("id", count="exact").execute()
-        disruption_res = sb.table("news_articles").select("id", count="exact").eq("is_disruption", True).execute()
-        duplicate_res = sb.table("news_articles").select("id", count="exact").eq("is_duplicate", True).execute()
-        # Severity breakdown from all rows
-        all_res = sb.table("news_articles").select("severity,event_type").execute()
-        rows = all_res.data or []
+        total = db.query(NewsArticle).count()
+        disruptions = db.query(NewsArticle).filter(NewsArticle.is_disruption == True).count()
+        duplicates  = db.query(NewsArticle).filter(NewsArticle.is_duplicate == True).count()
+
+        rows = db.query(NewsArticle.severity, NewsArticle.event_type).all()
         severity_counts: Dict[str, int] = {}
         event_type_counts: Dict[str, int] = {}
-        for r in rows:
-            s = r.get("severity") or "NONE"
-            severity_counts[s] = severity_counts.get(s, 0) + 1
-            et = r.get("event_type")
+        for s, et in rows:
+            sev = s or "NONE"
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
             if et:
                 event_type_counts[et] = event_type_counts.get(et, 0) + 1
+
         return {
-            "total_articles":      total_res.count or 0,
-            "disruption_events":   disruption_res.count or 0,
-            "duplicates_removed":  duplicate_res.count or 0,
+            "total_articles":      total,
+            "disruption_events":   disruptions,
+            "duplicates_removed":  duplicates,
             "severity_breakdown":  severity_counts,
             "event_type_breakdown": event_type_counts,
         }
@@ -205,14 +194,15 @@ def get_news_stats() -> Dict[str, Any]:
         return {"total_articles": 0, "error": str(e)}
 
 
-
 # ── 5. Configured sources ─────────────────────────────────────────────────────
 
 @router.get(
     "/sources",
     summary="List configured RSS news sources",
 )
-def list_sources() -> Dict[str, Any]:
+def list_sources(
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
     from app.news.sources import SUPPLY_CHAIN_RSS_SOURCES, TAVILY_SEARCH_QUERIES
     return {
         "rss_sources": [
@@ -235,6 +225,7 @@ def list_sources() -> Dict[str, Any]:
     summary="Get background scheduler status",
 )
 def get_scheduler_status(
+    current_user: UserPrincipal = Depends(get_current_user),
     scheduler = Depends(get_news_scheduler),
 ) -> Dict[str, Any]:
     return scheduler.status()
@@ -247,8 +238,9 @@ def get_scheduler_status(
     summary="Start or stop the background news collection scheduler",
 )
 def toggle_scheduler(
-    action:    str       = Query(..., description="start | stop | pause | resume"),
-    scheduler            = Depends(get_news_scheduler),
+    action:       str           = Query(..., description="start | stop | pause | resume"),
+    current_user: UserPrincipal = Depends(get_current_user),
+    scheduler                   = Depends(get_news_scheduler),
 ) -> Dict[str, Any]:
     action = action.lower().strip()
     if action == "start":

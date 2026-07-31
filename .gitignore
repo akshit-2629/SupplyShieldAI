@@ -1,8 +1,18 @@
-# System Files
-.DS_Store
-Thumbs.db
+# ─────────────────────────────────────────────────────────────────────────────
+# SupplyShield AI — Root .gitignore
+# ─────────────────────────────────────────────────────────────────────────────
 
-# IDEs and Editors
+# ── OS / System ───────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ── IDEs and Editors ──────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.suo
@@ -10,24 +20,140 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+*.swp
+*.swn
+*.orig
+*.rej
+.editorconfig.local
 
-# Local environment variables
+# ── Environment Variables (NEVER commit secrets) ──────────────────────────────
 .env
-.env*.local
+.env.*
+!.env.example          # Keep examples for reference
+*.local
 
-# Python envs and caches at any level
-venv/
-.venv/
+# ─────────────────────────────────────────────────────────────────────────────
+# BACKEND (Python / FastAPI)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Python byte-compiled / caches
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 *.pyo
 *.pyd
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+__pypackages__/
+
+# Distribution / packaging
+build/
+dist/
+dist-ssr/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
 .pytest_cache/
 .mypy_cache/
+.dmypy.json
+dmypy.json
+.fullname
 
-# Node modules and build outputs
+# Type checkers
+.pyre/
+.pytype/
+cython_debug/
+
+# Alembic generated migration scripts (optional — keep if you want them tracked)
+# backend/alembic/versions/
+
+# Log files
+logs/
+*.log
+*.log.*
+
+# Database files
+*.db
+*.sqlite3
+*.sqlite3-journal
+
+# Audit / scratch scripts (dev-only, not production code)
+backend/audit_*.py
+backend/test_production_422.py
+
+# Source ZIP archives (generated artifacts, not source)
+*.zip
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FRONTEND (Node / Vite / React)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Dependencies
 node_modules/
+
+# Build outputs
 dist/
 dist-ssr/
 build/
 out/
+.next/
+.nuxt/
+.output/
+
+# Cache
+.vite/
+.parcel-cache/
+*.tsbuildinfo
+
+# Test outputs
+coverage/
+cypress/videos/
+cypress/screenshots/
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MISC / DOCUMENTATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Large data / docs generated at build time
+backend_endpoints_data.md
+database/

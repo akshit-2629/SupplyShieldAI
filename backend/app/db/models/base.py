@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import DateTime, MetaData
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, declared_attr
 
 # Custom constraints and naming convention configurations for Alembic migration stability
 POSTGRES_NAMING_CONVENTION = {
@@ -17,8 +17,7 @@ class Base(DeclarativeBase):
     """
     metadata = MetaData(naming_convention=POSTGRES_NAMING_CONVENTION)
     
-    @classmethod
-    @property
+    @declared_attr.directive
     def __tablename__(cls) -> str:
         """
         Dynamically infers table name from model class name in snake_case format.

@@ -38,6 +38,60 @@ class ValidationException(AppBaseException):
     def __init__(self, message: str = "Validation failed", error_code: str = "VALIDATION_ERROR"):
         super().__init__(message=message, error_code=error_code, status_code=status.HTTP_400_BAD_REQUEST)
 
+
+class ConflictException(AppBaseException):
+    """
+    Exception raised when a resource already exists or an operation conflicts.
+    """
+    def __init__(self, message: str = "Resource conflict", error_code: str = "CONFLICT"):
+        super().__init__(message=message, error_code=error_code, status_code=status.HTTP_409_CONFLICT)
+
+
+class ForbiddenException(AppBaseException):
+    """
+    Exception raised when a user lacks permission for an action.
+    """
+    def __init__(self, message: str = "Access denied", error_code: str = "FORBIDDEN"):
+        super().__init__(message=message, error_code=error_code, status_code=status.HTTP_403_FORBIDDEN)
+
+
+# ── Phase 9: Supplier Portal exceptions ──────────────────────────────────────────
+
+class SupplierAccountPendingException(AppBaseException):
+    """Raised when a supplier tries to log in before admin approval."""
+    def __init__(self, message: str = "Your account is pending administrator approval"):
+        super().__init__(message=message, error_code="ACCOUNT_PENDING", status_code=status.HTTP_403_FORBIDDEN)
+
+
+class SupplierAccountSuspendedException(AppBaseException):
+    """Raised when a suspended supplier account attempts any action."""
+    def __init__(self, message: str = "Your account has been suspended. Contact support."):
+        super().__init__(message=message, error_code="ACCOUNT_SUSPENDED", status_code=status.HTTP_403_FORBIDDEN)
+
+
+class SupplierAccountRejectedException(AppBaseException):
+    """Raised when a rejected supplier account attempts to log in."""
+    def __init__(self, message: str = "Your account registration was not approved."):
+        super().__init__(message=message, error_code="ACCOUNT_REJECTED", status_code=status.HTTP_403_FORBIDDEN)
+
+
+class DuplicateSupplierRegistrationException(AppBaseException):
+    """Raised when a supplier tries to register with an already-used email."""
+    def __init__(self, message: str = "An account with this email already exists"):
+        super().__init__(message=message, error_code="DUPLICATE_REGISTRATION", status_code=status.HTTP_409_CONFLICT)
+
+
+class FileUploadException(AppBaseException):
+    """Raised when a file upload fails validation or storage."""
+    def __init__(self, message: str = "File upload failed", error_code: str = "FILE_UPLOAD_ERROR"):
+        super().__init__(message=message, error_code=error_code, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+
+class OrchestratorNotAvailableException(AppBaseException):
+    """Non-fatal: orchestrator unavailable; data is saved but agents not triggered."""
+    def __init__(self, message: str = "Orchestrator temporarily unavailable — data saved successfully"):
+        super().__init__(message=message, error_code="ORCHESTRATOR_UNAVAILABLE", status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
 async def app_base_exception_handler(request: Request, exc: AppBaseException) -> JSONResponse:
     """
     Handles custom AppBaseExceptions and formats the JSON response.

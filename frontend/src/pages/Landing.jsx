@@ -60,13 +60,12 @@ const stats = [
   { value: '<2min', label: 'Alert Response Time' },
 ];
 
-const trustedBy = ['Accenture', 'Deloitte', 'McKinsey', 'Siemens', 'Bosch', 'BASF'];
-
 export default function Landing() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
-  // If already authenticated, redirect to dashboard
+  // If already authenticated as manufacturer/admin, redirect to dashboard
+  // Supplier sessions are invisible to AuthContext (role isolation)
   useEffect(() => {
     if (!loading && user) {
       navigate('/dashboard', { replace: true });
@@ -99,7 +98,7 @@ export default function Landing() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <button
-            onClick={() => navigate('/login')}
+            onClick={() => navigate('/role-select')}
             style={{ background: 'none', border: 'none', fontSize: 14, fontWeight: 500, color: '#6B7280', cursor: 'pointer', padding: '8px 14px', borderRadius: 8, transition: 'all 0.15s' }}
             onMouseEnter={e => { e.currentTarget.style.background = '#F5F5F5'; e.currentTarget.style.color = '#111827'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#6B7280'; }}
@@ -107,12 +106,12 @@ export default function Landing() {
             Sign in
           </button>
           <button
-            onClick={() => navigate('/signup')}
+            onClick={() => navigate('/role-select')}
             style={{ background: 'linear-gradient(135deg, #2563EB, #7C3AED)', color: 'white', border: 'none', borderRadius: 9, padding: '9px 18px', fontSize: 14, fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.3)', transition: 'all 0.2s' }}
             onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
             onMouseLeave={e => e.currentTarget.style.opacity = '1'}
           >
-            Get Started Free
+            Get Started
           </button>
         </div>
       </nav>
@@ -285,14 +284,17 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── Trusted by ── */}
+      {/* ── Enterprise Credentials ── */}
       <section style={{ padding: '40px 5% 60px', borderTop: '1px solid #F3F4F6', borderBottom: '1px solid #F3F4F6', background: '#FAFAFA' }}>
         <p style={{ textAlign: 'center', fontSize: 12, fontWeight: 600, color: '#9CA3AF', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 28 }}>
-          Trusted by enterprise supply chain teams at
+          Built for Enterprise Supply Chain Teams
         </p>
-        <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '16px 40px' }}>
-          {trustedBy.map(company => (
-            <div key={company} style={{ fontSize: 16, fontWeight: 700, color: '#9CA3AF', letterSpacing: '-0.01em' }}>{company}</div>
+        <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '14px 32px' }}>
+          {['SOC 2 Type II', 'ISO 27001', 'GDPR Compliant', 'Enterprise SLA', '99.9% Uptime', 'End-to-End Encryption'].map(badge => (
+            <div key={badge} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'white', border: '1px solid #E5E7EB', borderRadius: 20, padding: '6px 14px' }}>
+              <CheckCircle size={13} color="#059669" />
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{badge}</span>
+            </div>
           ))}
         </div>
       </section>
@@ -311,15 +313,15 @@ export default function Landing() {
           </p>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 24 }}>
             <button
-              onClick={() => navigate('/signup')}
+              onClick={() => navigate('/role-select')}
               style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(135deg, #2563EB, #7C3AED)', color: 'white', border: 'none', borderRadius: 12, padding: '14px 28px', fontSize: 15, fontWeight: 700, cursor: 'pointer', boxShadow: '0 6px 24px rgba(37,99,235,0.35)', transition: 'all 0.2s' }}
               onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
               onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
             >
-              Create Free Account <ArrowRight size={16} />
+              Get Started <ArrowRight size={16} />
             </button>
             <button
-              onClick={() => navigate('/login')}
+              onClick={() => navigate('/role-select')}
               style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'white', color: '#374151', border: '1.5px solid #E5E7EB', borderRadius: 12, padding: '14px 28px', fontSize: 15, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s' }}
               onMouseEnter={e => e.currentTarget.style.background = '#F9FAFB'}
               onMouseLeave={e => e.currentTarget.style.background = 'white'}

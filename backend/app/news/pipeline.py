@@ -61,9 +61,9 @@ class NewsPipeline:
         self.embedder     = NewsEmbedder()
         self.deduplicator = NewsDeduplicator()
 
-    async def run(self, db=None) -> PipelineResult:
+    async def run(self, db=None, tenant_context: Optional[dict] = None) -> PipelineResult:
         """
-        Execute full pipeline. If db is None, skip storage step.
+        Execute full pipeline with optional tenant_context. If db is None, skip storage step.
         """
         result = PipelineResult(
             started_at=datetime.now(timezone.utc).isoformat()
@@ -71,8 +71,8 @@ class NewsPipeline:
 
         try:
             # ── Step 1: Collect ───────────────────────────────────────────────
-            logger.info("[pipeline] Step 1: Collecting from all sources...")
-            raw_articles = await self.collector.collect_all()
+            logger.info("[pipeline] Step 1: Collecting from all sources with Industry context...")
+            raw_articles = await self.collector.collect_all(tenant_context=tenant_context)
             result.collected = len(raw_articles)
             logger.info(f"[pipeline] Collected {result.collected} articles")
 
@@ -89,10 +89,10 @@ class NewsPipeline:
             result.cleaned = len(cleaned)
             logger.info(f"[pipeline] {result.cleaned} articles after cleaning")
 
-            # ── Step 3: Extract metadata (NLP, severity, etc.) ────────────────
-            logger.info("[pipeline] Step 3: Extracting metadata...")
+            # ── Step 3: Extract metadata (NLP, severity, industry relevance) ──
+            logger.info("[pipeline] Step 3: Extracting metadata & Industry Relevance...")
             enriched = await asyncio.to_thread(
-                self._extract_batch, cleaned
+                self._extract_batch, cleaned, tenant_context
             )
 
             # ── Step 4: Embed ─────────────────────────────────────────────────
@@ -160,9 +160,9 @@ class NewsPipeline:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _extract_batch(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Run extractor synchronously on all articles."""
-        return [self.extractor.enrich(a) for a in articles]
+    def _extract_batch(self, articles: List[Dict[str, Any]], tenant_context: Optional[dict] = None) -> List[Dict[str, Any]]:
+        """Run extractor synchronously on all articles with tenant_context."""
+        return [self.extractor.enrich(a, tenant_context=tenant_context) for a in articles]
 
     def _store_articles_supabase(self, articles: List[Dict[str, Any]]) -> List[str]:
         """Primary: store articles via Supabase REST API (no direct DB connection)."""

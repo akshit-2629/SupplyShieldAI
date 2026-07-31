@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { User, Shield, Bell, Key, Sliders, Save, Copy, Eye, EyeOff } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 const tabs = [
   { key: 'profile', label: 'Profile', icon: User },
@@ -11,9 +12,15 @@ const tabs = [
 ];
 
 export default function Settings() {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('profile');
   const [showApiKey, setShowApiKey] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Derive display values from live auth session
+  const fullName  = user?.user_metadata?.full_name || user?.user_metadata?.name || 'User';
+  const email     = user?.email || '';
+  const initials  = fullName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'U';
 
   function handleSave() {
     setSaved(true);
@@ -47,7 +54,7 @@ export default function Settings() {
               {/* Avatar */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'linear-gradient(135deg,#2563EB,#7C3AED)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ fontSize: 22, fontWeight: 800, color: 'white' }}>AK</span>
+                  <span style={{ fontSize: 22, fontWeight: 800, color: 'white' }}>{initials}</span>
                 </div>
                 <div>
                   <button style={{ background: '#EFF6FF', color: '#2563EB', border: '1px solid #BFDBFE', borderRadius: 7, padding: '7px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', marginBottom: 4 }}>Change Avatar</button>
@@ -56,10 +63,10 @@ export default function Settings() {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
                 {[
-                  { label: 'Full Name', value: 'Akshit Kumar', type: 'text' },
-                  { label: 'Job Title', value: 'Chief Risk Officer', type: 'text' },
-                  { label: 'Email', value: 'akshit@supplyshield.ai', type: 'email' },
-                  { label: 'Organization', value: 'SupplyShield Inc.', type: 'text' },
+                  { label: 'Full Name',     value: fullName, type: 'text' },
+                  { label: 'Job Title',     value: user?.user_metadata?.job_title || 'Supply Chain Manager', type: 'text' },
+                  { label: 'Email',         value: email,    type: 'email' },
+                  { label: 'Organization',  value: user?.user_metadata?.organization || 'SupplyShield Inc.', type: 'text' },
                 ].map(f => (
                   <div key={f.label}>
                     <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>{f.label}</label>

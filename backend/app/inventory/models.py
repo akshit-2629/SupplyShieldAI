@@ -256,6 +256,17 @@ class InventoryProjection:
             "stockout":      self.stockout.to_dict(),
             "revenue_impact": self.revenue.to_dict(),
             "manufacturing_delay": self.delay.to_dict(),
+            # Flat helpers for frontend compatibility
+            "component_id":         str(self.item.component_id),
+            "component_name":       self.item.component_name,
+            "supplier_id":          self.item.supplier_id,
+            "supplier_name":        self.item.supplier_name,
+            "current_stock":        self.item.current_stock,
+            "days_remaining":       round(self.stockout.days_remaining, 1),
+            "stockout_risk":        self.stockout.stockout_risk.value,
+            "stockout_probability": round(self.stockout.stockout_probability, 4),
+            "revenue_lost_usd":     round(self.revenue.revenue_lost_usd, 2),
+            "delay_days":           round(self.delay.delay_days, 1),
         }
 
 

@@ -35,14 +35,31 @@ logger = logging.getLogger("graph.serializer")
 
 # ── Layout constants ──────────────────────────────────────────────────────────
 LAYER_X: Dict[str, int] = {
-    "country":     0,
-    "supplier":    300,
-    "component":   600,
-    "product":     900,
-    "risk_event":  1200,
+    "COMPANY":          0,
+    "FACTORY":          280,
+    "WAREHOUSE":        280,
+    "PRODUCTION_LINE":  520,
+    "PRODUCT":          760,
+    "COMPONENT":        1040,
+    "SUPPLIER":         1320,
+    "SHIPMENT":         1600,
+    "INCIDENT":         1880,
+    "RECOMMENDATION":   2160,
+    "DOCUMENT":         1480,
+    "QUALITY_ISSUE":    1180,
+    # Fallback lowercase
+    "company":          0,
+    "factory":          280,
+    "warehouse":        280,
+    "product":          760,
+    "component":        1040,
+    "supplier":         1320,
+    "shipment":         1600,
+    "incident":         1880,
+    "recommendation":   2160,
 }
-NODE_Y_SPACING = 120   # vertical gap between nodes in the same layer
-NODE_X_JITTER  = 50    # slight X variation within a layer
+NODE_Y_SPACING = 130   # vertical gap between nodes in the same layer
+NODE_X_JITTER  = 40    # slight X variation within a layer
 
 
 class ReactFlowSerializer:

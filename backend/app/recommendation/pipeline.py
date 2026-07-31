@@ -94,7 +94,7 @@ class RecommendationPipeline:
         recommendations: List[RecommendationResult] = []
         for item in at_risk_items:
             try:
-                rec = self._evaluate_one(item, score_lookup)
+                rec = self._evaluate_one(item, score_lookup, evaluated_at)
                 recommendations.append(rec)
             except Exception as e:
                 logger.warning(f"[recommendation_pipeline] Skipping {item.get('supplier_id')}: {e}")
@@ -139,6 +139,7 @@ class RecommendationPipeline:
         self,
         at_risk_item:  Dict[str, Any],
         score_lookup:  Dict[str, Any],
+        evaluated_at:  str = "",
     ) -> RecommendationResult:
         """
         Run the full MCDM pipeline for one at-risk supplier.

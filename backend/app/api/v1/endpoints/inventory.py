@@ -34,25 +34,64 @@ router = APIRouter(prefix="/inventory", tags=["Inventory Impact"])
 # In-memory result store
 # ─────────────────────────────────────────────────────────────────────────────
 
-_latest_result: Optional[Any] = None
+from datetime import datetime, timezone
+from app.core.security import get_current_user, UserPrincipal
+from app.manufacturer.models import ManufacturerComponent
+from app.inventory.pipeline import InventoryPipeline, InventoryPipelineResult
 
-
-def _get_result():
-    if _latest_result is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Inventory projections not yet computed. "
-                "Trigger the orchestrator via POST /orchestrator/trigger "
-                "or rebuild via POST /inventory/rebuild"
-            ),
+# Tenant-scoped result resolver (PostgreSQL single source of truth)
+def _get_result(user_id: str, db: Session) -> InventoryPipelineResult:
+    components = db.query(ManufacturerComponent).filter_by(company_user_id=user_id).all()
+    
+    if not components:
+        eval_time = datetime.now(timezone.utc).isoformat()
+        return InventoryPipelineResult(
+            projections=[],
+            fleet_forecast={
+                "fleet_inventory_health": 0.0,
+                "fleet_health_label": "NO_DATA",
+                "critical_at_risk_count": 0,
+                "high_at_risk_count": 0,
+                "total_revenue_at_risk": 0.0,
+                "total_financial_impact": 0.0,
+            },
+            alerts=[],
+            summary={
+                "total_items": 0,
+                "fleet_inventory_health": 0.0,
+                "fleet_health_label": "NO_DATA",
+                "critical_count": 0,
+                "high_risk_count": 0,
+                "total_revenue_at_risk": 0.0,
+                "total_financial_impact": 0.0,
+                "alert_count": 0,
+                "execution_id": "tenant_live",
+                "evaluated_at": eval_time,
+            },
+            execution_id="tenant_live",
+            evaluated_at=eval_time,
+            total_items=0,
         )
-    return _latest_result
 
+    items_data = [
+        {
+            "component_id": str(c.id),
+            "component_name": c.component_name,
+            "supplier_id": c.preferred_supplier or "supplier::UNKNOWN",
+            "supplier_name": c.preferred_supplier or "Unknown Supplier",
+            "unit": c.unit or "units",
+            "current_stock": float(c.safety_stock) if c.safety_stock is not None else 1000.0,
+            "daily_consumption": (float(c.avg_monthly_usage) / 30.0) if c.avg_monthly_usage else 10.0,
+            "monthly_demand": float(c.avg_monthly_usage) if c.avg_monthly_usage else 300.0,
+            "lead_time_days": 30,
+            "unit_cost": 100.0,
+            "revenue_per_unit": 200.0,
+        }
+        for c in components
+    ]
 
-def update_latest_result(result: Any) -> None:
-    global _latest_result
-    _latest_result = result
+    pipeline = InventoryPipeline()
+    return pipeline.run(items_data=items_data, execution_id=f"tenant_{user_id[:8]}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -61,12 +100,14 @@ def update_latest_result(result: Any) -> None:
 
 @router.get("/", summary="All inventory component projections (latest run)")
 def list_projections(
-    risk:      Optional[str]   = Query(default=None, description="Filter: CRITICAL, HIGH, MEDIUM, LOW, SAFE"),
-    min_days:  Optional[float] = Query(default=None, ge=0, description="Minimum days remaining"),
-    max_days:  Optional[float] = Query(default=None, ge=0, description="Maximum days remaining"),
-    limit:     int             = Query(default=50, ge=1, le=200),
+    risk:         Optional[str]   = Query(default=None, description="Filter: CRITICAL, HIGH, MEDIUM, LOW, SAFE"),
+    min_days:     Optional[float] = Query(default=None, ge=0, description="Minimum days remaining"),
+    max_days:     Optional[float] = Query(default=None, ge=0, description="Maximum days remaining"),
+    limit:        int             = Query(default=50, ge=1, le=200),
+    current_user: UserPrincipal   = Depends(get_current_user),
+    db:           Session         = Depends(get_db),
 ) -> Dict[str, Any]:
-    res  = _get_result()
+    res  = _get_result(current_user.user_id, db)
     proj = res.projections
 
     if risk:
@@ -83,6 +124,7 @@ def list_projections(
         "total":        len(proj),
         "evaluated_at": res.evaluated_at,
         "projections":  [p.to_dict() for p in proj[:limit]],
+        "components":   [p.to_dict() for p in proj[:limit]],
     }
 
 
@@ -91,8 +133,11 @@ def list_projections(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/fleet", summary="Fleet Inventory Health + financial impact summary")
-def get_fleet() -> Dict[str, Any]:
-    res = _get_result()
+def get_fleet(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     return {
         "summary":        res.summary,
         "fleet_forecast": res.fleet_forecast,
@@ -105,8 +150,11 @@ def get_fleet() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/alerts", summary="CRITICAL + HIGH stockout alerts requiring immediate action")
-def get_alerts() -> Dict[str, Any]:
-    res = _get_result()
+def get_alerts(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     return {
         "alert_count":  len(res.alerts),
         "alerts":       res.alerts,
@@ -119,8 +167,11 @@ def get_alerts() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/stats", summary="Quick fleet statistics")
-def get_stats() -> Dict[str, Any]:
-    res = _get_result()
+def get_stats(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     return {
         "summary":           res.summary,
         "risk_distribution": res.fleet_forecast.get("risk_distribution", {}),
@@ -134,8 +185,12 @@ def get_stats() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/risk/{risk_level}", summary="Components filtered by stockout risk level")
-def get_by_risk(risk_level: str) -> Dict[str, Any]:
-    res   = _get_result()
+def get_by_risk(
+    risk_level:   str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res   = _get_result(current_user.user_id, db)
     valid = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "SAFE"}
     rl    = risk_level.upper()
     if rl not in valid:
@@ -143,8 +198,8 @@ def get_by_risk(risk_level: str) -> Dict[str, Any]:
 
     proj = [p for p in res.projections if p.stockout.stockout_risk.value == rl]
     return {
-        "risk_level": rl,
-        "count":      len(proj),
+        "risk_level":  rl,
+        "count":       len(proj),
         "projections": [p.to_dict() for p in sorted(proj, key=lambda p: p.stockout.days_remaining)],
     }
 
@@ -154,8 +209,12 @@ def get_by_risk(risk_level: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/supplier/{supplier_id}", summary="All components supplied by a specific supplier")
-def get_by_supplier(supplier_id: str) -> Dict[str, Any]:
-    res  = _get_result()
+def get_by_supplier(
+    supplier_id:  str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res  = _get_result(current_user.user_id, db)
     proj = [p for p in res.projections if p.item.supplier_id == supplier_id]
     if not proj:
         # partial match
@@ -173,8 +232,12 @@ def get_by_supplier(supplier_id: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/product/{product_name}", summary="Components used in a specific product")
-def get_by_product(product_name: str) -> Dict[str, Any]:
-    res   = _get_result()
+def get_by_product(
+    product_name: str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res   = _get_result(current_user.user_id, db)
     pname = product_name.lower()
     proj  = [
         p for p in res.projections
@@ -199,8 +262,10 @@ def get_by_product(product_name: str) -> Dict[str, Any]:
 def get_timeline(
     component_id: str,
     horizon:      int = Query(default=120, ge=7, le=365),
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
-    res  = _get_result()
+    res  = _get_result(current_user.user_id, db)
     proj = next((p for p in res.projections if p.item.component_id == component_id), None)
     if not proj:
         cid = component_id.lower()
@@ -223,8 +288,12 @@ def get_timeline(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/{component_id}", summary="Full projection for a single component")
-def get_component(component_id: str) -> Dict[str, Any]:
-    res  = _get_result()
+def get_component(
+    component_id: str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res  = _get_result(current_user.user_id, db)
     proj = next((p for p in res.projections if p.item.component_id == component_id), None)
     if not proj:
         cid = component_id.lower()
@@ -242,8 +311,10 @@ def get_component(component_id: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/rebuild", summary="Force re-run the full inventory pipeline")
-async def rebuild_inventory(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    global _latest_result
+async def rebuild_inventory(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
     try:
         from app.inventory.pipeline import InventoryPipeline
         from app.db.models.risk_assessment import RiskAssessment
@@ -287,9 +358,8 @@ async def rebuild_inventory(db: Session = Depends(get_db)) -> Dict[str, Any]:
         result   = pipeline.run(
             risk_assessments = risk_data,
             supplier_scores  = supplier_data,
-            execution_id     = "manual_rebuild",
+            execution_id     = f"manual_rebuild_{current_user.user_id[:8]}",
         )
-        _latest_result = result
 
         return {
             "success":                True,
@@ -305,3 +375,4 @@ async def rebuild_inventory(db: Session = Depends(get_db)) -> Dict[str, Any]:
     except Exception as e:
         logger.exception("rebuild_inventory failed")
         raise HTTPException(status_code=500, detail=str(e))
+

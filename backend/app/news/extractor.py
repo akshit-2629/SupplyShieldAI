@@ -59,10 +59,10 @@ def _get_nlp():
 class NewsArticleExtractor:
     """Enriches a cleaned article dict with NLP metadata."""
 
-    def enrich(self, article: dict) -> dict:
+    def enrich(self, article: dict, tenant_context: Optional[dict] = None) -> dict:
         """
         Return a copy of article with all metadata fields added.
-        The original dict is NOT mutated.
+        Includes Industry-Aware relevance classification against tenant context.
         """
         enriched = dict(article)
 
@@ -78,9 +78,78 @@ class NewsArticleExtractor:
         enriched["severity"]      = severity
         enriched["severity_score"] = score
         enriched["event_type"]    = self._classify_event_type(text)
-        enriched["is_disruption"] = severity in {"CRITICAL", "HIGH", "MEDIUM"}
+
+        # Industry-Aware Relevance Classification
+        is_relevant, relevance_score, reasons = self._evaluate_industry_relevance(text, tenant_context)
+        enriched["is_industry_relevant"] = is_relevant
+        enriched["relevance_score"]     = relevance_score
+        enriched["matching_reasons"]    = reasons
+
+        # Disruption flag is True ONLY if severity is MEDIUM/HIGH/CRITICAL AND article is industry-relevant
+        enriched["is_disruption"] = (severity in {"CRITICAL", "HIGH", "MEDIUM"}) and is_relevant
 
         return enriched
+
+    def _evaluate_industry_relevance(
+        self, text: str, tenant_context: Optional[dict] = None
+    ) -> Tuple[bool, float, List[str]]:
+        if not tenant_context:
+            return True, 1.0, []
+
+        lower = text.lower()
+        matched_reasons = []
+        ind_score = 0.0
+
+        industry = (tenant_context.get("industry") or "Electronics Manufacturing").lower()
+        components = [c.lower() for c in tenant_context.get("components", []) if c]
+        suppliers = [s.lower() for s in tenant_context.get("suppliers", []) if s]
+        products = [p.lower() for p in tenant_context.get("products", []) if p]
+
+        # 1. Electronics Industry Keywords Match
+        electronics_terms = [
+            "semiconductor", "chip", "pcb", "display", "oled", "dram", "memory",
+            "microcontroller", "lithium battery", "chip shortage", "export ban",
+            "factory fire", "earthquake", "port congestion", "trade restrictions",
+            "power outage", "wafer", "fab", "substrate", "mlcc", "passive components",
+            "microchip", "integrated circuit", "foundry", "silicon", "sensor"
+        ]
+
+        if "electronic" in industry or "semiconductor" in industry or "hardware" in industry:
+            for term in electronics_terms:
+                if term in lower:
+                    ind_score += 2.0
+                    matched_reasons.append(f"industry_keyword:{term}")
+
+        # 2. Direct Tenant Entity Match
+        for c in components:
+            if c in lower:
+                ind_score += 4.0
+                matched_reasons.append(f"component:{c}")
+
+        for s in suppliers:
+            if s in lower:
+                ind_score += 4.0
+                matched_reasons.append(f"supplier:{s}")
+
+        for p in products:
+            if p in lower:
+                ind_score += 3.0
+                matched_reasons.append(f"product:{p}")
+
+        # 3. Supply Chain Disruption Generic Keywords
+        sc_terms = ["port strike", "freight delay", "shipping congestion", "tariff", "trade war", "embargo", "sanctions", "factory shutdown"]
+        for st in sc_terms:
+            if st in lower and not matched_reasons:
+                ind_score += 1.0
+
+        # Irrelevant domain penalty
+        irrelevant_terms = ["tourism", "vacation resort", "agriculture harvest", "corn crop", "wheat yield", "hospital beds", "clinical trial"]
+        for irr in irrelevant_terms:
+            if irr in lower and not any("component:" in r or "supplier:" in r for r in matched_reasons):
+                ind_score -= 5.0
+
+        is_relevant = (ind_score >= 1.0) or (len(matched_reasons) > 0)
+        return is_relevant, max(0.0, min(10.0, ind_score)), matched_reasons
 
     # ── Severity scoring (Weighted Keyword Algorithm) ──────────────────────────
 

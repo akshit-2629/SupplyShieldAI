@@ -1,0 +1,50 @@
+# render.yaml — SupplyShield AI Backend deployment on Render
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: supplyshield-backend
+    runtime: python
+    region: oregon           # Closest to most users; change to "frankfurt" for EU
+    plan: starter            # Upgrade to "standard" for production SLA
+
+    # Root directory of the backend within the monorepo
+    rootDir: backend
+
+    # Build command — install all Python dependencies
+    buildCommand: pip install -r requirements.txt
+
+    # Start command — production ASGI server with 2 workers
+    # Render sets $PORT automatically; we bind to 0.0.0.0 so it's reachable
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+
+    # Health-check so Render restarts the service if it hangs
+    healthCheckPath: /
+
+    # Auto-deploy on every push to main/master
+    autoDeploy: true
+
+    # Environment variables — set SECRET values in the Render dashboard,
+    # not here. Only non-secret defaults belong in this file.
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: NEWS_SCHEDULER_AUTO_START
+        value: "true"
+
+      # ── Set these in Render Dashboard → Environment ────────────────────────
+      # DATABASE_URL           (Supabase / Render Postgres connection string)
+      # SUPABASE_URL
+      # SUPABASE_ANON_KEY
+      # SUPABASE_JWT_SECRET
+      # SUPABASE_SERVICE_ROLE_KEY
+      # GOOGLE_CLIENT_ID
+      # GOOGLE_CLIENT_SECRET
+      # GOOGLE_REDIRECT_URI    (https://your-render-url.onrender.com/api/v1/auth/google/callback)
+      # FRONTEND_URL           (https://your-app.vercel.app)
+      # GEMINI_API_KEY
+      # TAVILY_API_KEY

@@ -60,6 +60,12 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  // Unified Tenant Overview query
+  const { data: overviewData, isLoading: isLoadingOverview } = useQuery({
+    queryKey: ['dashboard-overview'],
+    queryFn: () => api.get('/dashboard/overview'),
+  });
+
   // 1. Fetch KPIs
   const { data: kpisData, isLoading: isLoadingKPIs, isError: isErrorKPIs } = useQuery({
     queryKey: ['dashboard-kpis'],
@@ -90,27 +96,24 @@ export default function Dashboard() {
     queryFn: () => api.get('/dashboard/recent-disruptions'),
   });
 
-  // 6. Fetch Activity Feed (using orchestrator endpoints, we simulate this if not available)
+  // 6. Fetch Activity Feed
   const { data: activityFeed, isLoading: isLoadingActivity } = useQuery({
     queryKey: ['dashboard-activity'],
     queryFn: async () => {
-      // Temporary fallback until actual activity feed endpoint exists in orchestrator
       try {
-          const events = await api.get('/orchestrator/events');
-          // Map to activity format
-          if(Array.isArray(events) && events.length > 0) {
-              return events.slice(0, 6).map((e, i) => ({
-                  id: e.id || i,
-                  action: `${e.agent || 'System'} ${e.event_type || 'Update'}`,
-                  time: timeAgo(e.timestamp),
-                  type: e.agent === 'Master Orchestrator' ? 'system' : 'ai'
-              }));
-          }
-      } catch (err) {
-          // Ignore error and return fallback empty array
-      }
+        const resp = await api.get('/orchestrator/events?limit=20');
+        const evList = Array.isArray(resp?.events) ? resp.events : [];
+        if (evList.length > 0) {
+          return evList.slice(0, 6).map((e, i) => ({
+            id: e.id || i,
+            action: `[${e.agent_id || e.source || 'orchestrator'}] ${e.event_type || 'Update'}${e.message ? ': ' + e.message : ''}`,
+            time: e.timestamp ? timeAgo(e.timestamp) : 'Just now',
+            type: (e.event_type || '').includes('COMPLETED') ? 'ai' : 'system',
+          }));
+        }
+      } catch (err) {}
       return [
-        { id: 1, action: 'Dashboard loaded and connected to live APIs', time: 'Just now', type: 'system' }
+        { id: 1, action: 'Workspace active · Single Source of Truth mode', time: 'Just now', type: 'system' },
       ];
     },
   });
@@ -119,7 +122,7 @@ export default function Dashboard() {
   const triggerAnalysis = useMutation({
     mutationFn: () => api.post('/orchestrator/trigger'),
     onSuccess: () => {
-      // Invalidate all dashboard queries to refetch fresh data
+      queryClient.invalidateQueries(['dashboard-overview']);
       queryClient.invalidateQueries(['dashboard-kpis']);
       queryClient.invalidateQueries(['dashboard-incident']);
       queryClient.invalidateQueries(['dashboard-risk-trend']);
@@ -129,12 +132,14 @@ export default function Dashboard() {
     }
   });
 
+  const tenantKPIs = overviewData?.kpis || {};
+
   const liveKPIs = [
-    { label: 'Active Disruptions', value: kpisData?.activeDisruptions || 0, change: 3, changeType: 'increase', icon: 'AlertTriangle', color: '#DC2626', bg: '#FEE2E2' },
-    { label: 'Critical Risks', value: kpisData?.criticalRisks || 0, change: 1, changeType: 'increase', icon: 'Flame', color: '#9A3412', bg: '#FEF3C7' },
-    { label: 'Affected Suppliers', value: kpisData?.affectedSuppliers || 0, change: 12, changeType: 'increase', icon: 'Building2', color: '#D97706', bg: '#FEF9C3' },
-    { label: 'Inventory Health', value: `${kpisData?.inventoryHealth || 0}%`, change: -8, changeType: 'decrease', icon: 'Package', color: '#D97706', bg: '#FEF3C7' },
-    { label: 'Alt. Suppliers Ready', value: kpisData?.alternativeSuppliers || 0, change: 4, changeType: 'increase', icon: 'CheckCircle', color: '#059669', bg: '#D1FAE5' },
+    { label: 'Active Suppliers', value: tenantKPIs.suppliersCount ?? (kpisData?.affectedSuppliers || 0), change: 0, changeType: 'increase', icon: 'Building2', color: '#2563EB', bg: '#EFF6FF' },
+    { label: 'Products Tracked', value: tenantKPIs.productsCount ?? 0, change: 0, changeType: 'increase', icon: 'Package', color: '#059669', bg: '#D1FAE5' },
+    { label: 'Components Tracked', value: tenantKPIs.componentsCount ?? 0, change: 0, changeType: 'increase', icon: 'CheckCircle', color: '#7C3AED', bg: '#EDE9FE' },
+    { label: 'Active Disruptions', value: tenantKPIs.activeDisruptions ?? (kpisData?.activeDisruptions || 0), change: 0, changeType: 'increase', icon: 'AlertTriangle', color: '#DC2626', bg: '#FEE2E2' },
+    { label: 'Critical Risks', value: tenantKPIs.criticalRisks ?? (kpisData?.criticalRisks || 0), change: 0, changeType: 'increase', icon: 'Flame', color: '#9A3412', bg: '#FEF3C7' },
   ];
 
   return (
@@ -274,7 +279,7 @@ export default function Dashboard() {
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }} className="card" style={{ padding: 20 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>Recent Disruptions</div>
-            <button onClick={() => navigate('/disruptions')} style={{ fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500 }}>View all →</button>
+            <button onClick={() => navigate('/disruption-monitor')} style={{ fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500 }}>View all →</button>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {isLoadingDisruptions ? (
@@ -285,7 +290,7 @@ export default function Dashboard() {
               recentDisruptions.map(d => {
                 const sc = severityColor(d.severity);
                 return (
-                  <div key={d.id} onClick={() => navigate('/disruptions')} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#FAFAFA', borderRadius: 8, cursor: 'pointer', transition: 'background 0.15s' }}
+                  <div key={d.id} onClick={() => navigate('/disruption-monitor')} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#FAFAFA', borderRadius: 8, cursor: 'pointer', transition: 'background 0.15s' }}
                     onMouseEnter={e => e.currentTarget.style.background = '#F3F4F6'}
                     onMouseLeave={e => e.currentTarget.style.background = '#FAFAFA'}
                   >

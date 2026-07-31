@@ -1,19 +1,25 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { useNavigate, Link } from 'react-router-dom';
-import { Eye, EyeOff, ShieldCheck, Loader, AlertCircle, ArrowRight } from 'lucide-react';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { Eye, EyeOff, ShieldCheck, Loader, AlertCircle, ArrowRight, BarChart3, Clock } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
+import { getSetupStatus } from '../services/manufacturerApi';
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user, loading: authLoading } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPass, setShowPass] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [email,         setEmail]         = useState('');
+  const [password,      setPassword]      = useState('');
+  const [showPass,      setShowPass]      = useState(false);
+  const [loading,       setLoading]       = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [error, setError] = useState('');
+  const sessionExpired = searchParams.get('error') === 'session_expired';
+  const [error, setError] = useState(
+    sessionExpired ? 'Your session has expired. Please sign in again.' : ''
+  );
+
 
   // Already authenticated → send to dashboard
   useEffect(() => {
@@ -30,13 +36,29 @@ export default function Login() {
       return;
     }
     setLoading(true);
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
     if (signInError) {
+      setLoading(false);
       setError(signInError.message);
       return;
     }
-    navigate('/dashboard', { replace: true });
+    // Block suppliers from logging in via manufacturer portal
+    const role = data?.user?.user_metadata?.role;
+    if (role === 'supplier') {
+      await supabase.auth.signOut();
+      setLoading(false);
+      setError('This account is registered as a supplier. Please use the Supplier Login.');
+      return;
+    }
+    // Check if manufacturer setup is complete
+    try {
+      const status = await getSetupStatus();
+      setLoading(false);
+      navigate(status?.complete ? '/dashboard' : '/setup', { replace: true });
+    } catch {
+      setLoading(false);
+      navigate('/setup', { replace: true }); // Default to setup on error
+    }
   }
 
   async function handleGoogleLogin() {
@@ -71,8 +93,12 @@ export default function Login() {
           <div style={{ width: 56, height: 56, background: 'linear-gradient(135deg, #2563EB, #7C3AED)', borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }} className="animate-float">
             <ShieldCheck size={28} color="white" strokeWidth={2} />
           </div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 20, padding: '4px 12px', marginBottom: 12 }}>
+            <BarChart3 size={13} color="#2563EB" />
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#2563EB' }}>Manufacturer Portal</span>
+          </div>
           <h1 style={{ fontSize: 24, fontWeight: 800, color: '#111827', marginBottom: 6 }}>Welcome back</h1>
-          <p style={{ fontSize: 14, color: '#9CA3AF' }}>Sign in to SupplyShield AI Platform</p>
+          <p style={{ fontSize: 14, color: '#9CA3AF' }}>Sign in to your manufacturer workspace</p>
         </motion.div>
 
         {/* Card */}
@@ -107,11 +133,21 @@ export default function Login() {
             <div style={{ flex: 1, height: 1, background: '#F3F4F6' }} />
           </div>
 
-          {/* Error */}
+          {/* Error / Session Expired Banner */}
           {error && (
             <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#DC2626' }}>
-              <AlertCircle size={14} /> {error}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                background: sessionExpired ? '#FFFBEB' : '#FEF2F2',
+                border: `1px solid ${sessionExpired ? '#FDE68A' : '#FCA5A5'}`,
+                borderRadius: 8, padding: '10px 14px', marginBottom: 16,
+                fontSize: 13,
+                color: sessionExpired ? '#92400E' : '#DC2626',
+              }}>
+              {sessionExpired
+                ? <Clock size={14} />
+                : <AlertCircle size={14} />}
+              {' '}{error}
             </motion.div>
           )}
 
@@ -171,12 +207,18 @@ export default function Login() {
         <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}
           style={{ textAlign: 'center', marginTop: 20, fontSize: 13, color: '#9CA3AF' }}>
           Don't have an account?{' '}
-          <Link to="/signup" style={{ color: '#2563EB', fontWeight: 600 }}>Create account</Link>
+          <Link to="/signup" style={{ color: '#2563EB', fontWeight: 600 }}>Register as Manufacturer</Link>
         </motion.p>
 
         <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.45 }}
           style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: '#9CA3AF' }}>
-          <Link to="/" style={{ color: '#9CA3AF' }}>← Back to homepage</Link>
+          Are you a supplier?{' '}
+          <Link to="/supplier/login" style={{ color: '#10B981', fontWeight: 600 }}>Supplier Login →</Link>
+        </motion.p>
+
+        <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}
+          style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: '#9CA3AF' }}>
+          <Link to="/role-select" style={{ color: '#9CA3AF' }}>← Back to Role Selection</Link>
         </motion.p>
       </div>
     </div>

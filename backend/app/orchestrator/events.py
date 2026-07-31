@@ -44,6 +44,45 @@ class EventType(str, Enum):
     STOCK_IMPACT_PROJECTED    = "inventory.stock_impact_projected"  # Phase 7
     RECOMMENDATIONS_GENERATED = "recommendations.generated"   # Phase 8
 
+    # ── Phase 9: Supplier Portal data-update events ──────────────────────────
+    # Published when a supplier submits an update via the portal.
+    # MasterOrchestrator routes these to the appropriate AI agents.
+    SUPPLIER_PORTAL_PROFILE_UPDATED    = "supplier_portal.profile_updated"
+    SUPPLIER_PORTAL_PRODUCTION_UPDATED = "supplier_portal.production_updated"
+    SUPPLIER_PORTAL_INVENTORY_UPDATED  = "supplier_portal.inventory_updated"
+    SUPPLIER_PORTAL_LEAD_TIME_UPDATED  = "supplier_portal.lead_time_updated"
+    SUPPLIER_PORTAL_SHIPMENT_UPDATED   = "supplier_portal.shipment_updated"
+    SUPPLIER_PORTAL_INCIDENT_REPORTED  = "supplier_portal.incident_reported"
+    SUPPLIER_PORTAL_FORECAST_UPDATED   = "supplier_portal.forecast_updated"
+
+    # ── Manufacturer Setup & Master Data Management (MDM) Domain Events ───────
+    COMPANY_CREATED            = "manufacturer.company_created"
+    COMPANY_UPDATED            = "manufacturer.company_updated"
+    FACTORY_CREATED            = "manufacturer.factory_created"
+    FACTORY_UPDATED            = "manufacturer.factory_updated"
+    FACTORY_DELETED            = "manufacturer.factory_deleted"
+    WAREHOUSE_CREATED          = "manufacturer.warehouse_created"
+    WAREHOUSE_UPDATED          = "manufacturer.warehouse_updated"
+    WAREHOUSE_DELETED          = "manufacturer.warehouse_deleted"
+    PRODUCT_CREATED            = "manufacturer.product_created"
+    PRODUCT_UPDATED            = "manufacturer.product_updated"
+    PRODUCT_DELETED            = "manufacturer.product_deleted"
+    COMPONENT_CREATED          = "manufacturer.component_created"
+    COMPONENT_UPDATED          = "manufacturer.component_updated"
+    COMPONENT_DELETED          = "manufacturer.component_deleted"
+    PRODUCTION_LINE_CREATED    = "manufacturer.production_line_created"
+    PRODUCTION_LINE_UPDATED    = "manufacturer.production_line_updated"
+    PRODUCTION_LINE_DELETED    = "manufacturer.production_line_deleted"
+    BOM_UPDATED                = "manufacturer.bom_updated"
+    SUPPLIER_INVITED           = "manufacturer.supplier_invited"
+    SUPPLIER_APPROVED          = "manufacturer.supplier_approved"
+    SUPPLIER_PORTAL_CAPACITY_UPDATED = "supplier_portal.capacity_updated"
+    SUPPLIER_PORTAL_SETUP_COMPLETED  = "supplier_portal.setup_completed"
+
+    # ── Platform events ──────────────────────────────────────────────────────
+    REPORT_GENERATED                   = "platform.report_generated"
+
+
 
 @dataclass
 class Event:

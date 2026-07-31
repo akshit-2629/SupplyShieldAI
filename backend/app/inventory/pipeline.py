@@ -82,13 +82,15 @@ class InventoryPipeline:
         risk_assessments: Optional[List[Dict[str, Any]]] = None,
         supplier_scores:  Optional[List[Dict[str, Any]]] = None,
         graph_snapshot:   Optional[Dict[str, Any]]       = None,
+        items_data:       Optional[List[Dict[str, Any]]] = None,
         execution_id:     str                            = "",
     ) -> InventoryPipelineResult:
 
         evaluated_at = datetime.now(timezone.utc).isoformat()
 
-        # ── Step 1 + 2: Load and enrich seed items ────────────────────────────
+        # ── Step 1 + 2: Load and enrich items ─────────────────────────────────
         items = self._build_items(
+            items_data       = items_data       or [],
             risk_assessments = risk_assessments or [],
             supplier_scores  = supplier_scores  or [],
             graph_snapshot   = graph_snapshot   or {},
@@ -157,14 +159,15 @@ class InventoryPipeline:
 
     def _build_items(
         self,
+        items_data:       List[Dict[str, Any]],
         risk_assessments: List[Dict[str, Any]],
         supplier_scores:  List[Dict[str, Any]],
         graph_snapshot:   Dict[str, Any],
     ) -> List[InventoryItem]:
         items = []
-        for seed in SEED_INVENTORY:
+        for raw in items_data:
             enriched = self.mapper.enrich_item(
-                item_dict        = seed,
+                item_dict        = raw,
                 risk_assessments = risk_assessments,
                 supplier_scores  = supplier_scores,
                 graph_snapshot   = graph_snapshot,

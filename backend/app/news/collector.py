@@ -43,12 +43,13 @@ class NewsCollector:
 
     # ── Public interface ──────────────────────────────────────────────────────
 
-    async def collect_all(self) -> List[Dict[str, Any]]:
+    async def collect_all(self, tenant_context: Optional[dict] = None) -> List[Dict[str, Any]]:
         """
         Collect from all configured sources concurrently.
+        Uses tenant_context (industry, components) to fetch targeted feeds.
         Returns a URL-deduplicated list of raw article dicts.
         """
-        rss_task    = self._collect_all_rss()
+        rss_task    = self._collect_all_rss(tenant_context=tenant_context)
         tavily_task = self._collect_tavily()
 
         rss_articles, tavily_articles = await asyncio.gather(
@@ -79,10 +80,14 @@ class NewsCollector:
 
     # ── RSS Collection ────────────────────────────────────────────────────────
 
-    async def _collect_all_rss(self) -> List[Dict[str, Any]]:
-        from app.news.sources import SUPPLY_CHAIN_RSS_SOURCES
+    async def _collect_all_rss(self, tenant_context: Optional[dict] = None) -> List[Dict[str, Any]]:
+        from app.news.sources import SUPPLY_CHAIN_RSS_SOURCES, get_industry_rss_sources
 
-        tasks = [self._fetch_rss(source) for source in SUPPLY_CHAIN_RSS_SOURCES]
+        industry = tenant_context.get("industry") if tenant_context else "Electronics Manufacturing"
+        components = tenant_context.get("components") if tenant_context else []
+        sources = get_industry_rss_sources(industry=industry, component_names=components)
+
+        tasks = [self._fetch_rss(source) for source in sources]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         articles: List[Dict[str, Any]] = []

@@ -145,6 +145,20 @@ class RiskAgent(BaseAgent):
             pipeline = RiskPipeline()
             result   = await pipeline.run(news_events)
 
+            # Generate Enterprise Incidents in PostgreSQL
+            try:
+                from app.db.session import SessionLocal
+                from app.risk.incident_generator import EnterpriseIncidentGenerator
+                db_session = SessionLocal()
+                try:
+                    generator = EnterpriseIncidentGenerator(db_session)
+                    generated_incidents = generator.generate_incidents_from_news(news_events)
+                    logger.info(f"[risk_agent] Generated {len(generated_incidents)} enterprise incidents in PostgreSQL")
+                finally:
+                    db_session.close()
+            except Exception as gen_err:
+                logger.warning(f"[risk_agent] Incident generation failed: {gen_err}")
+
             logger.info(
                 f"[risk_agent] Pipeline complete — "
                 f"scored={result.scored}, "

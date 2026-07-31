@@ -61,3 +61,23 @@ export function riskScoreColor(score) {
   if (score >= 40) return { color: '#854D0E', bg: '#FEF9C3' };
   return { color: '#065F46', bg: '#D1FAE5' };
 }
+
+export async function downloadFile(url, fileName) {
+  if (!url) return;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = fileName || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    console.warn('Blob download failed, falling back to window.open:', err);
+    window.open(url, '_blank');
+  }
+}

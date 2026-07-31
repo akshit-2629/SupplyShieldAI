@@ -7,7 +7,7 @@ export const useAppStore = create((set) => ({
   commandPaletteOpen: false,
   setCommandPaletteOpen: (v) => set({ commandPaletteOpen: v }),
 
-  notifications: 6,
+  notifications: 0,
   clearNotifications: () => set({ notifications: 0 }),
 
   activeWorkflow: false,

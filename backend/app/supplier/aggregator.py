@@ -66,9 +66,25 @@ class FleetAggregator:
         if not profiles:
             return {
                 "fleet_health_index": 0.0,
+                "fleet_health_label": "NO_DATA",
                 "total_suppliers": 0,
+                "tier_distribution": {
+                    "TIER_1": {"count": 0, "pct": 0.0},
+                    "TIER_2": {"count": 0, "pct": 0.0},
+                    "TIER_3": {"count": 0, "pct": 0.0},
+                },
+                "health_distribution": {},
+                "country_risk": {},
+                "industry_risk": {},
+                "critical_alerts": [],
+                "alert_count": 0,
+                "top_performers": [],
+                "bottom_performers": [],
+                "avg_scores": {},
+                "risk_concentration": {},
                 "message": "No supplier profiles",
             }
+
 
         fhi         = self._fleet_health_index(profiles)
         tier_dist   = self._tier_distribution(profiles)

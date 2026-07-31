@@ -33,23 +33,53 @@ logger = logging.getLogger("api.supplier")
 router = APIRouter(prefix="/suppliers", tags=["Supplier Intelligence"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# In-memory store for latest pipeline result (set after each run)
-# ─────────────────────────────────────────────────────────────────────────────
-_latest_result: Optional[Any] = None
+from datetime import datetime, timezone
+from app.core.security import get_current_user, UserPrincipal
+from app.supplier_management.management_service import SupplierManagementService
+from app.supplier.pipeline import SupplierPipeline, SupplierPipelineResult
 
+def _get_result(user_id: str, db: Session) -> SupplierPipelineResult:
+    svc = SupplierManagementService(db)
+    rows, _ = svc.list_suppliers(user_id, status_filter="APPROVED", page_size=500)
 
-def _get_result():
-    if _latest_result is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Supplier scores not yet computed. "
-                "Trigger the orchestrator via POST /orchestrator/trigger "
-                "or rebuild via POST /suppliers/rebuild"
-            ),
+    
+    if not rows:
+        eval_time = datetime.now(timezone.utc).isoformat()
+        return SupplierPipelineResult(
+            profiles=[],
+            ranked=[],
+            aggregation={
+                "total_suppliers": 0,
+                "fleet_health_index": 0.0,
+                "fleet_health_label": "NO_DATA",
+                "alert_count": 0,
+                "critical_alerts": [],
+                "tier_distribution": {
+                    "TIER_1": {"count": 0, "pct": 0.0},
+                    "TIER_2": {"count": 0, "pct": 0.0},
+                    "TIER_3": {"count": 0, "pct": 0.0},
+                },
+            },
+            summary={
+                "total_scored": 0,
+                "fleet_health_index": 0.0,
+                "fleet_health_label": "NO_DATA",
+                "tier_1_count": 0,
+                "tier_2_count": 0,
+                "tier_3_count": 0,
+                "critical_alerts": 0,
+                "top_supplier": "N/A",
+                "top_supplier_score": 0.0,
+                "execution_id": "tenant_live",
+                "evaluated_at": eval_time,
+            },
+            execution_id="tenant_live",
+            evaluated_at=eval_time,
+            total_scored=0,
         )
-    return _latest_result
+
+    pipeline = SupplierPipeline()
+    return pipeline.run(suppliers_data=rows, execution_id=f"tenant_{user_id[:8]}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,11 +121,13 @@ def update_latest_result(result: Any) -> None:
 
 @router.get("/", summary="Ranked supplier list (latest evaluation)")
 def list_suppliers(
-    tier:       Optional[str]   = Query(default=None, description="Filter: TIER_1, TIER_2, TIER_3"),
-    min_health: Optional[float] = Query(default=None, ge=0, le=100),
-    limit:      int             = Query(default=50, ge=1, le=200),
+    tier:         Optional[str]   = Query(default=None, description="Filter: TIER_1, TIER_2, TIER_3"),
+    min_health:   Optional[float] = Query(default=None, ge=0, le=100),
+    limit:        int             = Query(default=50, ge=1, le=200),
+    current_user: UserPrincipal   = Depends(get_current_user),
+    db:           Session         = Depends(get_db),
 ) -> Dict[str, Any]:
-    res = _get_result()
+    res = _get_result(current_user.user_id, db)
     profiles = res.ranked
 
     if tier:
@@ -104,9 +136,9 @@ def list_suppliers(
         profiles = [p for p in profiles if p.health.health_score >= min_health]
 
     return {
-        "total":     len(profiles),
+        "total":        len(profiles),
         "evaluated_at": res.evaluated_at,
-        "suppliers": [p.to_dict() for p in profiles[:limit]],
+        "suppliers":    [p.to_dict() for p in profiles[:limit]],
     }
 
 
@@ -115,11 +147,14 @@ def list_suppliers(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/fleet", summary="Fleet Health Index + aggregated statistics")
-def get_fleet_stats() -> Dict[str, Any]:
-    res = _get_result()
+def get_fleet_stats(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     return {
-        "summary":     res.summary,
-        "aggregation": res.aggregation,
+        "summary":      res.summary,
+        "aggregation":  res.aggregation,
         "evaluated_at": res.evaluated_at,
     }
 
@@ -129,12 +164,15 @@ def get_fleet_stats() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/alerts", summary="Critical supplier alerts requiring immediate attention")
-def get_alerts() -> Dict[str, Any]:
-    res = _get_result()
+def get_alerts(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     alerts = res.aggregation.get("critical_alerts", [])
     return {
-        "alert_count": len(alerts),
-        "alerts":      alerts,
+        "alert_count":  len(alerts),
+        "alerts":       alerts,
         "evaluated_at": res.evaluated_at,
     }
 
@@ -145,9 +183,11 @@ def get_alerts() -> Dict[str, Any]:
 
 @router.get("/leaderboard", summary="Top N suppliers by health score")
 def get_leaderboard(
-    top_n: int = Query(default=10, ge=1, le=50),
+    top_n:        int           = Query(default=10, ge=1, le=50),
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
-    res = _get_result()
+    res = _get_result(current_user.user_id, db)
     top = sorted(res.profiles, key=lambda p: p.health.health_score, reverse=True)[:top_n]
     return {
         "top_n":    top_n,
@@ -173,8 +213,11 @@ def get_leaderboard(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/ranking", summary="Compact ranked supplier table")
-def get_ranking() -> Dict[str, Any]:
-    res = _get_result()
+def get_ranking(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     from app.supplier.ranker import SupplierRanker
     return SupplierRanker().get_rank_summary(res.ranked)
 
@@ -184,15 +227,18 @@ def get_ranking() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/stats", summary="Quick fleet statistics summary")
-def get_stats() -> Dict[str, Any]:
-    res = _get_result()
+def get_stats(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     return {
-        "summary":           res.summary,
-        "avg_scores":        res.aggregation.get("avg_scores", {}),
+        "summary":             res.summary,
+        "avg_scores":          res.aggregation.get("avg_scores", {}),
         "health_distribution": res.aggregation.get("health_distribution", {}),
-        "tier_distribution": res.aggregation.get("tier_distribution", {}),
-        "risk_concentration": res.aggregation.get("risk_concentration", {}),
-        "evaluated_at":      res.evaluated_at,
+        "tier_distribution":   res.aggregation.get("tier_distribution", {}),
+        "risk_concentration":  res.aggregation.get("risk_concentration", {}),
+        "evaluated_at":        res.evaluated_at,
     }
 
 
@@ -201,8 +247,12 @@ def get_stats() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/tier/{tier}", summary="All suppliers in a specific tier")
-def get_by_tier(tier: str) -> Dict[str, Any]:
-    res = _get_result()
+def get_by_tier(
+    tier:         str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     tier_upper = tier.upper()
     valid = {"TIER_1", "TIER_2", "TIER_3"}
     if tier_upper not in valid:
@@ -221,8 +271,12 @@ def get_by_tier(tier: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/country/{code}", summary="Suppliers in a specific country (ISO-2)")
-def get_by_country(code: str) -> Dict[str, Any]:
-    res = _get_result()
+def get_by_country(
+    code:         str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     cc  = code.upper()
     profiles = [p for p in res.ranked if p.country_code.upper() == cc]
     return {
@@ -237,8 +291,12 @@ def get_by_country(code: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/{supplier_id}", summary="Full profile for a single supplier")
-def get_supplier(supplier_id: str) -> Dict[str, Any]:
-    res = _get_result()
+def get_supplier(
+    supplier_id:  str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    res = _get_result(current_user.user_id, db)
     profile = next(
         (p for p in res.profiles if p.supplier_id == supplier_id),
         None,
@@ -263,7 +321,11 @@ def get_supplier(supplier_id: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/{supplier_id}/history", summary="Month-over-month score history for a supplier")
-def get_history(supplier_id: str) -> Dict[str, Any]:
+def get_history(
+    supplier_id: str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
     from app.supplier.history import historical_tracker
     history = historical_tracker.get_history(supplier_id)
     trend   = historical_tracker.get_trend_summary(supplier_id)
@@ -280,7 +342,10 @@ def get_history(supplier_id: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/score", summary="Score a single supplier on-demand")
-def score_supplier(req: OnDemandScoreRequest) -> Dict[str, Any]:
+def score_supplier(
+    req: OnDemandScoreRequest,
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
     from app.supplier.models import KPIScore
     from app.supplier.scorer import WeightedKPIScorer
 
@@ -317,9 +382,9 @@ def score_supplier(req: OnDemandScoreRequest) -> Dict[str, Any]:
 @router.post("/rebuild", summary="Force re-run the full supplier intelligence pipeline")
 async def rebuild_suppliers(
     req: RebuildRequest,
+    current_user: UserPrincipal = Depends(get_current_user),
     db:  Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    global _latest_result
     try:
         from app.supplier.pipeline import SupplierPipeline
         from app.db.models.risk_assessment import RiskAssessment
@@ -346,9 +411,8 @@ async def rebuild_suppliers(
         pipeline = SupplierPipeline()
         result   = pipeline.run(
             risk_assessments = risk_data,
-            execution_id     = "manual_rebuild",
+            execution_id     = f"manual_rebuild_{current_user.user_id[:8]}",
         )
-        _latest_result = result
 
         return {
             "success":             True,

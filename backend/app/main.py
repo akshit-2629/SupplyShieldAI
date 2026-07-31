@@ -53,7 +53,13 @@ async def lifespan(app: FastAPI):
         logger.error(f"[startup] News scheduler failed to start: {exc}")
         # Non-fatal: pipeline can still be triggered manually via REST API
 
-    yield  # ←─ application runs here
+    # Phase 4: Server startup complete
+    logger.info("[startup] Server initialization complete. Multi-tenant database mode active.")
+
+    try:
+        yield
+    finally:
+        logger.info("[shutdown] Server shutdown complete.")
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     # Phase 3: Stop news scheduler first
@@ -86,9 +92,25 @@ app = FastAPI(
 )
 
 # CORS Policy
+# allow_origins must be explicit (never "*") when allow_credentials=True —
+# browsers reject that combination per the CORS spec.
+#
+# In production  → only FRONTEND_URL (set via Render env var) is allowed.
+# In development → also accept the standard Vite localhost ports.
+_allowed_origins = [settings.FRONTEND_URL]
+
+if settings.ENVIRONMENT != "production":
+    _allowed_origins += [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+    ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -104,13 +126,22 @@ register_exception_handlers(app)
 app.include_router(api_router, prefix="/api/v1")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Favicon endpoint — prevents browser 404 warnings."""
+    from fastapi.responses import Response
+    from fastapi import status
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/", tags=["Root"])
 def read_root():
     """Root entrypoint — service identity and docs URL."""
     return {
         "service":  settings.APP_NAME,
         "version":  settings.APP_VERSION,
-        "phase":    "Phase 3 — News Intelligence Agent",
+        "status":   "production-ready",
+        "phases":   "Phases 0–9 complete — All 6 AI agents operational",
         "docs_url": "/docs" if settings.ENVIRONMENT != "production" else None,
     }
 

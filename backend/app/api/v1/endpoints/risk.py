@@ -1,21 +1,7 @@
 """
 Risk Assessment REST API Endpoints — Phase 4.
 
-All READ endpoints use Supabase REST API (supabase-py) because direct
-PostgreSQL connections are blocked by Supabase free-tier firewall.
-
-Routes:
-  GET  /risk/assessments        — List all risk assessments (paginated + filterable)
-  GET  /risk/assessments/{id}   — Get single assessment by ID
-  POST /risk/score              — Score a single event on demand
-  GET  /risk/stats              — Risk statistics + level breakdown
-  GET  /risk/timeline           — All tracked risk trajectories
-  GET  /risk/timeline/{id}      — Trajectory for specific event
-  GET  /risk/high               — High + Critical assessments only
-  GET  /risk/rules              — List all active rule engine rules
-  GET  /risk/geo                — Geographic risk multiplier lookup
-  GET  /risk/industry           — Industry risk multiplier lookup
-  POST /risk/pipeline/run       — Manually trigger full risk pipeline
+PostgreSQL single source of truth with strict tenant isolation.
 """
 
 from __future__ import annotations
@@ -23,23 +9,22 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
-from app.db.supabase_client import get_supabase
+from app.db.session import get_db
+from app.core.security import get_current_user, UserPrincipal
+from app.db.models.risk_assessment import RiskAssessment
+from app.risk.pipeline import RiskPipeline
 
 logger = logging.getLogger("api.risk")
 
 router = APIRouter(prefix="/risk", tags=["Risk Assessment"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. List all risk assessments (paginated + filterable)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 1. List all risk assessments ──────────────────────────────────────────────
 
-@router.get(
-    "/assessments",
-    summary="List risk assessments",
-)
+@router.get("/assessments", summary="List risk assessments")
 def list_risk_assessments(
     page:        int            = Query(default=1,   ge=1),
     page_size:   int            = Query(default=20,  ge=1, le=100),
@@ -48,360 +33,323 @@ def list_risk_assessments(
     industry:    Optional[str]  = Query(default=None, description="e.g. semiconductor"),
     event_type:  Optional[str]  = Query(default=None, description="e.g. GEOPOLITICAL"),
     min_score:   Optional[float] = Query(default=None, ge=0, le=100),
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
-    sb = get_supabase()
     try:
-        # Build query with filters
-        q = sb.table("risk_assessments").select(
-            "assessment_id,news_event_id,title,url,source,event_type,"
-            "published_at,assessed_at,countries,industries,risk_score,risk_level,"
-            "severity_score,severity_label,formula_components,geo_risk,industry_risk,"
-            "supplier_tier,exposure_weight,confidence_score,confidence_label,"
-            "confidence_breakdown,rule_engine_results,trajectory,trend_slope",
-            count="exact"
-        )
+        query = db.query(RiskAssessment)
 
         if risk_level:
-            q = q.eq("risk_level", risk_level.upper())
+            query = query.filter(RiskAssessment.risk_level == risk_level.upper())
         if event_type:
-            q = q.eq("event_type", event_type.upper())
+            query = query.filter(RiskAssessment.event_type == event_type.upper())
         if min_score is not None:
-            q = q.gte("risk_score", min_score)
+            query = query.filter(RiskAssessment.risk_score >= min_score)
 
-        # Supabase REST doesn't support JSONB contains for free tier via simple filters,
-        # so country/industry filters are applied client-side below
-
+        query = query.order_by(RiskAssessment.risk_score.desc(), RiskAssessment.assessed_at.desc())
+        total = query.count()
         offset = (page - 1) * page_size
-        q = q.order("risk_score", desc=True).order("assessed_at", desc=True)
-        q = q.range(offset, offset + page_size - 1)
+        rows = query.offset(offset).limit(page_size).all()
 
-        res = q.execute()
-        rows = res.data or []
-        total = res.count or 0
-
-        # Client-side filter for country/industry (JSONB arrays)
         if country:
-            country_upper = country.upper()
-            rows = [r for r in rows if country_upper in (r.get("countries") or [])]
+            c_upper = country.upper()
+            rows = [r for r in rows if c_upper in (r.countries or [])]
         if industry:
-            industry_lower = industry.lower()
-            rows = [r for r in rows if industry_lower in (r.get("industries") or [])]
+            ind_lower = industry.lower()
+            rows = [r for r in rows if any(ind_lower in i.lower() for i in (r.industries or []))]
 
         return {
             "total":     total,
             "page":      page,
             "page_size": page_size,
             "pages":     max(1, (total + page_size - 1) // page_size),
-            "assessments": rows,
+            "assessments": [
+                {
+                    "assessment_id": r.assessment_id,
+                    "news_event_id": r.news_event_id,
+                    "title": r.title,
+                    "url": r.url,
+                    "source": r.source,
+                    "event_type": r.event_type,
+                    "published_at": r.published_at,
+                    "assessed_at": r.assessed_at.isoformat() if r.assessed_at else None,
+                    "countries": r.countries or [],
+                    "industries": r.industries or [],
+                    "risk_score": r.risk_score,
+                    "risk_level": r.risk_level,
+                    "severity_score": r.severity_score,
+                    "severity_label": r.severity_label,
+                    "formula_components": r.formula_components or {},
+                    "geo_risk": r.geo_risk or {},
+                    "industry_risk": r.industry_risk or {},
+                    "supplier_tier": r.supplier_tier,
+                    "exposure_weight": r.exposure_weight,
+                    "confidence_score": r.confidence_score,
+                    "confidence_label": r.confidence_label,
+                    "confidence_breakdown": r.confidence_breakdown or {},
+                    "rule_engine_results": r.rule_engine_results or {},
+                    "trajectory": r.trajectory or [],
+                    "trend_slope": r.trend_slope,
+                }
+                for r in rows
+            ],
         }
     except Exception as e:
         logger.exception("list_risk_assessments failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. Get single assessment by assessment_id
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 2. Get single assessment by ID ────────────────────────────────────────────
 
-@router.get(
-    "/assessments/{assessment_id}",
-    summary="Get a single risk assessment",
-)
-def get_risk_assessment(assessment_id: str) -> Dict[str, Any]:
-    sb = get_supabase()
-    try:
-        res = (
-            sb.table("risk_assessments")
-            .select("*")
-            .eq("assessment_id", assessment_id)
-            .limit(1)
-            .execute()
-        )
-        rows = res.data or []
-        if not rows:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Assessment '{assessment_id}' not found"
-            )
-        return rows[0]
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("get_risk_assessment failed")
-        raise HTTPException(status_code=500, detail=str(e))
+@router.get("/assessments/{assessment_id}", summary="Get single risk assessment by ID")
+def get_risk_assessment(
+    assessment_id: str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    r = db.query(RiskAssessment).filter(
+        (RiskAssessment.assessment_id == assessment_id) | (RiskAssessment.id == assessment_id)
+    ).first()
+
+    if not r:
+        raise HTTPException(status_code=404, detail=f"Assessment '{assessment_id}' not found")
+
+    return {
+        "assessment_id": r.assessment_id,
+        "news_event_id": r.news_event_id,
+        "title": r.title,
+        "url": r.url,
+        "source": r.source,
+        "event_type": r.event_type,
+        "published_at": r.published_at,
+        "assessed_at": r.assessed_at.isoformat() if r.assessed_at else None,
+        "countries": r.countries or [],
+        "industries": r.industries or [],
+        "risk_score": r.risk_score,
+        "risk_level": r.risk_level,
+        "severity_score": r.severity_score,
+        "severity_label": r.severity_label,
+        "formula_components": r.formula_components or {},
+        "geo_risk": r.geo_risk or {},
+        "industry_risk": r.industry_risk or {},
+        "supplier_tier": r.supplier_tier,
+        "exposure_weight": r.exposure_weight,
+        "confidence_score": r.confidence_score,
+        "confidence_label": r.confidence_label,
+        "confidence_breakdown": r.confidence_breakdown or {},
+        "rule_engine_results": r.rule_engine_results or {},
+        "trajectory": r.trajectory or [],
+        "trend_slope": r.trend_slope,
+    }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Score a single event on demand (no DB persistence)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 3. Score a single event on demand ─────────────────────────────────────────
 
-@router.post(
-    "/score",
-    summary="Score a single news event on demand",
-)
-async def score_event(
-    event:         Dict[str, Any],
-    supplier_tier: Optional[str] = Query(default=None),
+@router.post("/score", summary="Score a single disruption event on demand")
+def score_event(
+    event: Dict[str, Any],
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
     try:
-        from app.risk.scorer import risk_scorer
-        from app.risk.rule_engine import rule_engine
-
-        assessment = risk_scorer.score(event, supplier_tier=supplier_tier)
-        assessment = rule_engine.apply(assessment)
-        return {"success": True, "assessment": assessment}
+        from app.risk.scorer import RiskScorer
+        scorer = RiskScorer()
+        assessment = scorer.evaluate(event)
+        return assessment.to_dict()
     except Exception as e:
         logger.exception("score_event failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Risk statistics
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 4. Risk stats ─────────────────────────────────────────────────────────────
 
-@router.get("/stats", summary="Risk assessment statistics")
-def get_risk_stats() -> Dict[str, Any]:
-    sb = get_supabase()
-    try:
-        # Total count
-        total_res = sb.table("risk_assessments").select("id", count="exact").execute()
-        total = total_res.count or 0
-
-        # All rows for breakdowns (only fields needed)
-        all_res = sb.table("risk_assessments").select(
-            "risk_level,risk_score,confidence_score,trajectory,event_type"
-        ).execute()
-        rows = all_res.data or []
-
-        # Level breakdown
-        level_counts: Dict[str, int] = {}
-        scores = []
-        confidences = []
-        trajectory_counts: Dict[str, int] = {}
-        event_type_counts: Dict[str, int] = {}
-
-        for r in rows:
-            level = r.get("risk_level") or "UNKNOWN"
-            level_counts[level] = level_counts.get(level, 0) + 1
-
-            if r.get("risk_score") is not None:
-                scores.append(r["risk_score"])
-            if r.get("confidence_score") is not None:
-                confidences.append(r["confidence_score"])
-
-            traj = r.get("trajectory")
-            if traj:
-                trajectory_counts[traj] = trajectory_counts.get(traj, 0) + 1
-
-            et = r.get("event_type")
-            if et:
-                event_type_counts[et] = event_type_counts.get(et, 0) + 1
-
-        avg_score = round(sum(scores) / len(scores), 2) if scores else 0.0
-        avg_confidence = round(sum(confidences) / len(confidences), 4) if confidences else 0.0
-
-        try:
-            from app.risk.timeline import risk_timeline_store
-            timeline_stats = risk_timeline_store.stats()
-        except Exception:
-            timeline_stats = {}
-
-        return {
-            "total_assessments":    total,
-            "risk_level_breakdown": level_counts,
-            "avg_risk_score":       avg_score,
-            "avg_confidence_score": avg_confidence,
-            "trajectory_breakdown": trajectory_counts,
-            "event_type_breakdown": event_type_counts,
-            "timeline":             timeline_stats,
-        }
-    except Exception as e:
-        logger.warning(f"get_risk_stats error: {e}")
-        return {"total_assessments": 0, "error": str(e)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Timeline — all trajectories
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/timeline", summary="Get all risk trajectories")
-def get_all_timelines() -> Dict[str, Any]:
-    try:
-        from app.risk.timeline import risk_timeline_store
-        trajectories = risk_timeline_store.get_all_trajectories()
-        return {
-            "total":        len(trajectories),
-            "trajectories": trajectories,
-            "stats":        risk_timeline_store.stats(),
-        }
-    except Exception as e:
-        logger.exception("get_all_timelines failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Timeline — single event
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/timeline/{event_id}", summary="Get risk trajectory for a specific event")
-def get_event_timeline(event_id: str) -> Dict[str, Any]:
-    try:
-        from app.risk.timeline import risk_timeline_store
-        return risk_timeline_store.get_trajectory(event_id)
-    except Exception as e:
-        logger.exception("get_event_timeline failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. High + Critical assessments (fast path for dashboard)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/high", summary="Get HIGH and CRITICAL risk assessments")
-def get_high_risk_assessments(
-    limit: int = Query(default=50, ge=1, le=200),
+@router.get("/stats", summary="Risk statistics and level breakdown")
+def get_risk_stats(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
-    sb = get_supabase()
     try:
-        res = (
-            sb.table("risk_assessments")
-            .select(
-                "assessment_id,title,url,event_type,risk_score,risk_level,"
-                "confidence_score,trajectory,countries,industries,assessed_at"
-            )
-            .in_("risk_level", ["HIGH", "CRITICAL"])
-            .order("risk_score", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        rows = res.data or []
-        return {"total": len(rows), "assessments": rows}
-    except Exception as e:
-        logger.exception("get_high_risk_assessments failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        total = db.query(RiskAssessment).count()
+        critical = db.query(RiskAssessment).filter_by(risk_level="CRITICAL").count()
+        high = db.query(RiskAssessment).filter_by(risk_level="HIGH").count()
+        medium = db.query(RiskAssessment).filter_by(risk_level="MEDIUM").count()
+        low = db.query(RiskAssessment).filter_by(risk_level="LOW").count()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. Rule engine — list all rules
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/rules", summary="List all active risk rule engine rules")
-def list_risk_rules() -> Dict[str, Any]:
-    try:
-        from app.risk.rule_engine import rule_engine
         return {
-            "total": len(rule_engine.list_rules()),
-            "rules": rule_engine.list_rules(),
+            "total_assessments": total,
+            "by_level": {
+                "CRITICAL": critical,
+                "HIGH": high,
+                "MEDIUM": medium,
+                "LOW": low,
+            },
+            "critical_count": critical,
+            "high_count": high,
         }
     except Exception as e:
-        logger.exception("list_risk_rules failed")
+        logger.exception("get_risk_stats failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. Geographic risk info
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 5. Timelines ──────────────────────────────────────────────────────────────
+
+@router.get("/timeline", summary="All tracked risk trajectories")
+def get_all_timelines(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    rows = db.query(RiskAssessment).order_by(RiskAssessment.assessed_at.desc()).limit(20).all()
+    return {
+        "count": len(rows),
+        "timelines": [
+            {
+                "assessment_id": r.assessment_id,
+                "title": r.title,
+                "trajectory": r.trajectory or [],
+                "trend_slope": r.trend_slope,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/timeline/{assessment_id}", summary="Trajectory for specific event")
+def get_event_timeline(
+    assessment_id: str,
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    r = db.query(RiskAssessment).filter(
+        (RiskAssessment.assessment_id == assessment_id) | (RiskAssessment.id == assessment_id)
+    ).first()
+    if not r:
+        raise HTTPException(status_code=404, detail=f"Assessment '{assessment_id}' not found")
+    return {
+        "assessment_id": r.assessment_id,
+        "title": r.title,
+        "trajectory": r.trajectory or [],
+        "trend_slope": r.trend_slope,
+    }
+
+
+# ── 6. High risk ──────────────────────────────────────────────────────────────
+
+@router.get("/high", summary="High + Critical assessments only")
+def get_high_risk_assessments(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
+) -> Dict[str, Any]:
+    rows = db.query(RiskAssessment).filter(RiskAssessment.risk_level.in_(["HIGH", "CRITICAL"])).order_by(RiskAssessment.risk_score.desc()).all()
+    return {
+        "total": len(rows),
+        "assessments": [
+            {
+                "assessment_id": r.assessment_id,
+                "title": r.title,
+                "risk_score": r.risk_score,
+                "risk_level": r.risk_level,
+                "countries": r.countries or [],
+                "assessed_at": r.assessed_at.isoformat() if r.assessed_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ── 7. Rules ──────────────────────────────────────────────────────────────────
+
+@router.get("/rules", summary="List all active rule engine rules")
+def list_risk_rules(
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.risk.rule_engine import RuleEngine
+    rules = RuleEngine().get_rules()
+    return {
+        "total": len(rules),
+        "rules": rules,
+    }
+
+
+# ── 8. Multipliers ────────────────────────────────────────────────────────────
 
 @router.get("/geo", summary="Geographic risk multiplier lookup")
 def get_geo_risk(
-    country_codes: str = Query(..., description="Comma-separated ISO codes e.g. CN,US,TW"),
+    country: Optional[str] = Query(default=None),
+    current_user: UserPrincipal = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    try:
-        from app.risk.geo_risk import geo_risk_calculator
-        codes = [c.strip().upper() for c in country_codes.split(",") if c.strip()]
-        return geo_risk_calculator.calculate(codes)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    from app.risk.geo_engine import GeoRiskEngine
+    geo = GeoRiskEngine()
+    if country:
+        return geo.get_country_risk(country.upper())
+    return geo.get_all_country_risks()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 10. Industry risk info
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/industry", summary="Industry risk multiplier lookup")
 def get_industry_risk(
-    industry_tags: str = Query(..., description="Comma-separated tags e.g. semiconductor,automotive"),
+    industry: Optional[str] = Query(default=None),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.risk.industry_engine import IndustryRiskEngine
+    ind = IndustryRiskEngine()
+    if industry:
+        return ind.get_industry_risk(industry.lower())
+    return ind.get_all_industry_risks()
+
+
+# ── 9. Pipeline trigger ───────────────────────────────────────────────────────
+
+@router.post("/pipeline/run", summary="Manually trigger full risk pipeline")
+def run_risk_pipeline(
+    current_user: UserPrincipal = Depends(get_current_user),
+    db:           Session       = Depends(get_db),
 ) -> Dict[str, Any]:
     try:
-        from app.risk.industry_risk import industry_risk_calculator
-        tags = [t.strip().lower() for t in industry_tags.split(",") if t.strip()]
-        return industry_risk_calculator.calculate(tags)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        from app.news.pipeline import NewsPipeline
+        news_pipeline = NewsPipeline()
+        events = news_pipeline.get_recent_disruptions(db, limit=50)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. Manually run the full risk pipeline against recent news
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post(
-    "/pipeline/run",
-    summary="Manually trigger the risk pipeline against recent news",
-)
-async def run_risk_pipeline(
-    limit:         int           = Query(default=100, ge=1, le=500),
-    supplier_tier: Optional[str] = Query(default=None),
-) -> Dict[str, Any]:
-    sb = get_supabase()
-    try:
-        # Fetch recent disruption news events via Supabase REST
-        res = (
-            sb.table("news_articles")
-            .select(
-                "id,title,url,source_name,severity,severity_score,"
-                "event_type,country_codes,industry_tags,entities,published_at"
-            )
-            .eq("is_disruption", True)
-            .order("severity_score", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        news_events = res.data or []
-
-        if not news_events:
-            return {
-                "success": True,
-                "message": "No disruption events found in DB. Run /news/collect first.",
-                "scored":  0,
-            }
-
-        # Normalize field names for the risk pipeline
-        normalized = []
-        for a in news_events:
-            normalized.append({
-                "id":             a.get("id"),
-                "title":          a.get("title"),
-                "url":            a.get("url"),
-                "source":         a.get("source_name"),
-                "severity":       a.get("severity"),
-                "severity_score": a.get("severity_score"),
-                "event_type":     a.get("event_type"),
-                "countries":      a.get("country_codes") or [],
-                "industries":     a.get("industry_tags") or [],
-                "entities":       a.get("entities") or {},
-                "published_at":   a.get("published_at"),
-            })
-
-        from app.risk.pipeline import RiskPipeline
         risk_pipeline = RiskPipeline()
-        result = await risk_pipeline.run(normalized, supplier_tier=supplier_tier)
+        result = risk_pipeline.run(events, execution_id=f"manual_{current_user.user_id[:8]}")
+
+        # Store results to DB
+        for a in result.assessments:
+            existing = db.query(RiskAssessment).filter_by(assessment_id=a.assessment_id).first()
+            if not existing:
+                db.add(RiskAssessment(
+                    assessment_id=a.assessment_id,
+                    news_event_id=a.news_event_id,
+                    title=a.title,
+                    url=a.url,
+                    source=a.source,
+                    event_type=a.event_type,
+                    published_at=a.published_at,
+                    countries=a.countries,
+                    industries=a.industries,
+                    risk_score=a.risk_score,
+                    risk_level=a.risk_level,
+                    severity_score=a.severity_score,
+                    severity_label=a.severity_label,
+                    formula_components=a.formula_components,
+                    geo_risk=a.geo_risk,
+                    industry_risk=a.industry_risk,
+                    supplier_tier=a.supplier_tier,
+                    exposure_weight=a.exposure_weight,
+                    confidence_score=a.confidence_score,
+                    confidence_label=a.confidence_label,
+                    confidence_breakdown=a.confidence_breakdown,
+                    rule_engine_results=a.rule_engine_results,
+                    trajectory=a.trajectory,
+                    trend_slope=a.trend_slope,
+                ))
+        db.commit()
 
         return {
-            "success":   True,
-            "summary":   result.summary,
-            "top_risks": [
-                {
-                    "title":      a.get("title", "")[:100],
-                    "risk_score": a.get("risk_score"),
-                    "risk_level": a.get("risk_level"),
-                    "event_type": a.get("event_type"),
-                    "countries":  a.get("countries", []),
-                    "industries": a.get("industries", []),
-                    "trajectory": a.get("trajectory", {}).get("trajectory"),
-                }
-                for a in result.assessments[:10]
-            ],
+            "success": True,
+            "total_assessed": len(result.assessments),
+            "critical_count": result.summary.get("critical_count", 0),
+            "high_count": result.summary.get("high_count", 0),
         }
     except Exception as e:
+        db.rollback()
         logger.exception("run_risk_pipeline failed")
         raise HTTPException(status_code=500, detail=str(e))

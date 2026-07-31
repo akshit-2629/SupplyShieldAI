@@ -137,7 +137,13 @@ export default function Inventory() {
                     ))}
                   </tr>
                 ))
-              : components.map((item, i) => (
+              : components.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ padding: '32px 14px', textAlign: 'center', color: '#9CA3AF', fontSize: 13 }}>
+                      No components have been added yet. Go to Business Management to add components.
+                    </td>
+                  </tr>
+                ) : components.map((item, i) => (
                   <motion.tr key={item.component_id || i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 + i * 0.05 }}
                     style={{ borderBottom: '1px solid #F9FAFB' }}
                   >
@@ -145,7 +151,7 @@ export default function Inventory() {
                       {item.component_name || item.component_id}
                     </td>
                     <td style={{ padding: '12px 14px', fontSize: 13, color: '#374151' }}>
-                      {(item.current_stock || 0).toLocaleString()}
+                      {(item.current_stock ?? item.item?.current_stock ?? 0).toLocaleString()}
                     </td>
                     <td style={{ padding: '12px 14px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

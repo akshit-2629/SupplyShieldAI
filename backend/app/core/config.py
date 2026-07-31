@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     # Set to False to disable auto-start (useful during tests)
     NEWS_SCHEDULER_AUTO_START: bool = Field(default=True)
 
+    # SMTP Configuration (Gmail, SendGrid, Mailgun, AWS SES, Custom SMTP)
+    SMTP_HOST: Optional[str] = Field(default=None)
+    SMTP_PORT: int = Field(default=587)
+    SMTP_USER: Optional[str] = Field(default=None)
+    SMTP_PASSWORD: Optional[str] = Field(default=None)
+    SMTP_FROM_EMAIL: Optional[str] = Field(default=None)
+    SMTP_FROM_NAME: str = Field(default="SupplyShield AI")
+    SMTP_TLS: bool = Field(default=True)
+
+
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
         """Returns DATABASE_URL if set, otherwise builds from individual POSTGRES_* vars."""

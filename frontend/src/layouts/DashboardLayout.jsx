@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import Sidebar from '../components/layout/Sidebar';
 import Navbar from '../components/layout/Navbar';
@@ -7,6 +7,7 @@ import CommandPalette from '../components/layout/CommandPalette';
 import { useAppStore } from '../store/appStore';
 
 export default function DashboardLayout() {
+  const location = useLocation();
   const { commandPaletteOpen, setCommandPaletteOpen } = useAppStore();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 

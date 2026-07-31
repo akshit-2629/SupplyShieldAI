@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShieldCheck, Loader } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { getSetupStatus } from '../services/manufacturerApi';
 
 /**
  * AuthCallback handles two OAuth redirect scenarios:
@@ -14,37 +15,47 @@ import { supabase } from '../lib/supabase';
  * 2. Backend Google OAuth (/api/v1/auth/google/callback)
  *    The backend redirects here with #access_token=...&token_type=bearer
  *    We manually extract the token from the URL fragment and set the session.
+ *
+ * ROLE-AWARE REDIRECT:
+ * - Suppliers  → /supplier/dashboard
+ * - Manufacturers without setup → /setup
+ * - Manufacturers with setup complete → /dashboard
  */
 export default function AuthCallback() {
   const navigate = useNavigate();
+
+  async function resolveDestination(session) {
+    const role = session?.user?.user_metadata?.role;
+    if (role === 'supplier') {
+      navigate('/supplier/dashboard', { replace: true });
+      return;
+    }
+    // Manufacturer — check setup completion
+    try {
+      const status = await getSetupStatus();
+      navigate(status?.complete ? '/dashboard' : '/setup', { replace: true });
+    } catch {
+      navigate('/setup', { replace: true });
+    }
+  }
 
   useEffect(() => {
     async function handleCallback() {
       const hash = window.location.hash;
 
       // ── Path A: Backend Google OAuth redirect ──────────────────
-      // Backend redirects to /auth/callback#access_token=...
       if (hash && hash.includes('access_token')) {
-        const params = new URLSearchParams(hash.substring(1)); // strip leading #
+        const params     = new URLSearchParams(hash.substring(1));
         const accessToken = params.get('access_token');
-        const tokenType   = params.get('token_type');
-        const expiresIn   = params.get('expires_in');
 
         if (accessToken) {
           try {
-            // Set the Supabase session manually using the backend-minted JWT
             const { data, error } = await supabase.auth.setSession({
               access_token:  accessToken,
-              refresh_token: accessToken, // backend flow has no refresh token
+              refresh_token: accessToken,
             });
-
-            if (error) {
-              console.error('[AuthCallback] setSession error:', error.message);
-              // Token may be valid even if setSession rejects — try to navigate anyway
-              // The backend minted a valid Supabase JWT so protected routes will accept it
-            }
-
-            navigate('/dashboard', { replace: true });
+            if (error) console.error('[AuthCallback] setSession error:', error.message);
+            await resolveDestination(data?.session);
             return;
           } catch (err) {
             console.error('[AuthCallback] Token processing error:', err);
@@ -55,13 +66,12 @@ export default function AuthCallback() {
       }
 
       // ── Path B: Supabase OAuth redirect (Google via Supabase) ──
-      // Supabase automatically parses the URL fragment and fires onAuthStateChange
       const { data: { subscription } } = supabase.auth.onAuthStateChange(
-        (event, session) => {
+        async (event, session) => {
           if (event === 'SIGNED_IN' && session) {
-            navigate('/dashboard', { replace: true });
+            await resolveDestination(session);
           } else if (event === 'SIGNED_OUT') {
-            navigate('/login', { replace: true });
+            navigate('/role-select', { replace: true });
           }
         }
       );
@@ -69,13 +79,13 @@ export default function AuthCallback() {
       // Fallback: session may already exist in storage
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        navigate('/dashboard', { replace: true });
+        await resolveDestination(session);
         return;
       }
 
-      // Timeout guard — if nothing fires in 5 seconds, send to login
+      // Timeout guard
       const timeout = setTimeout(() => {
-        navigate('/login?error=callback_timeout', { replace: true });
+        navigate('/role-select?error=callback_timeout', { replace: true });
       }, 5000);
 
       return () => {
@@ -85,7 +95,7 @@ export default function AuthCallback() {
     }
 
     handleCallback();
-  }, [navigate]);
+  }, [navigate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{

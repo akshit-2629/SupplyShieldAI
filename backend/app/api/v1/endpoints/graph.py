@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.core.security import UserPrincipal, get_current_user
 
 logger = logging.getLogger("api.graph")
 
@@ -65,17 +66,39 @@ class RebuildRequest(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: get current graph (raises 503 if not ready)
+# Helper: get current graph (lazy-init if not yet built — never 503)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_graph():
+import networkx as nx  # top-level import for lazy-init
+
+def _get_graph() -> nx.DiGraph:
+    """Return the live supply chain graph.
+
+    If the in-memory store has not been populated yet (e.g., the orchestrator
+    hasn't run since server start), we lazy-initialize an empty DiGraph so the
+    snapshot endpoint can immediately run the auto-seeder against the DB rather
+    than returning a 503 to the client.
+    """
     from app.graph.snapshot import graph_store
     G = graph_store.get_graph()
     if G is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Graph not yet built. Trigger the orchestrator first via POST /orchestrator/trigger",
-        )
+        # Initialize an empty directed graph so the seeder can populate it
+        G = nx.DiGraph()
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(
+                    graph_store.update(G, execution_id="lazy_init", snapshot_data={})
+                )
+            else:
+                loop.run_until_complete(
+                    graph_store.update(G, execution_id="lazy_init", snapshot_data={})
+                )
+        except Exception:
+            # Fallback: set graph directly (safe for sync context)
+            graph_store._graph = G
+        logger.info("[graph] Lazy-initialized empty DiGraph — seeder will populate from DB")
     return G
 
 
@@ -87,21 +110,44 @@ def _get_graph():
 def get_graph_snapshot(
     filter_types: Optional[str] = Query(
         default=None,
-        description="Comma-separated node types to include: supplier,component,product,country,risk_event"
+        description="Comma-separated node types to include: COMPANY,FACTORY,WAREHOUSE,PRODUCT,COMPONENT,SUPPLIER,SHIPMENT,INCIDENT,RECOMMENDATION"
     ),
     max_nodes: int = Query(default=150, ge=10, le=500),
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    G = _get_graph()
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.serializer import ReactFlowSerializer
     from app.graph.snapshot import graph_store
+
+    user_id = current_user.user_id
+    builder = SupplyChainGraphBuilder()
+    G = builder.build_from_db(db, user_id=user_id)
+
+    # Save to global store
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if not loop.is_running():
+            graph_store._graph = G
+    except Exception:
+        graph_store._graph = G
 
     serializer = ReactFlowSerializer()
     filter_list = [t.strip() for t in filter_types.split(",")] if filter_types else None
     rf_data = serializer.serialize(G, filter_node_types=filter_list, max_nodes=max_nodes)
 
+    is_empty = G.number_of_nodes() == 0
+
     return {
-        "store_stats": graph_store.stats(),
-        "react_flow":  rf_data,
+        "is_empty": is_empty,
+        "empty_message": "No supply chain entities available. Complete your company setup and onboard suppliers to begin building your digital twin graph.",
+        "store_stats": {
+            "node_count": G.number_of_nodes(),
+            "edge_count": G.number_of_edges(),
+            "graph_version": "2.0.0-db",
+        },
+        "react_flow": rf_data,
     }
 
 
@@ -110,9 +156,13 @@ def get_graph_snapshot(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/stats", summary="Graph statistics summary")
-def get_graph_stats() -> Dict[str, Any]:
-    G = _get_graph()
+def get_graph_stats(
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.algorithms import GraphAlgorithms
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     return GraphAlgorithms().graph_stats(G)
 
 
@@ -125,9 +175,12 @@ def list_nodes(
     node_type:     Optional[str]  = Query(default=None, description="Filter by type"),
     min_risk:      Optional[float] = Query(default=None, ge=0, le=100),
     sort_by:       str             = Query(default="risk_score"),
+    db:            Session        = Depends(get_db),
+    current_user:  UserPrincipal  = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    G = _get_graph()
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.search import GraphSearch
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
 
     searcher = GraphSearch()
     if node_type:
@@ -156,9 +209,14 @@ def list_nodes(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/nodes/{node_id}", summary="Get single node with full dependency analysis")
-def get_node(node_id: str) -> Dict[str, Any]:
-    G = _get_graph()
+def get_node(
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.analyzer import DependencyAnalyzer
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     return DependencyAnalyzer().analyze_node(G, node_id)
 
 
@@ -170,8 +228,11 @@ def get_node(node_id: str) -> Dict[str, Any]:
 def list_edges(
     edge_type: Optional[str] = Query(default=None),
     min_risk_weight: Optional[float] = Query(default=None, ge=0, le=1),
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    G = _get_graph()
+    from app.graph.builder import SupplyChainGraphBuilder
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     edges = []
     for src, tgt, data in G.edges(data=True):
         et = data.get("edge_type", "unknown")
@@ -198,9 +259,14 @@ def list_edges(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/bfs", summary="BFS traversal from source node")
-def run_bfs(req: BFSRequest) -> Dict[str, Any]:
-    G = _get_graph()
+def run_bfs(
+    req: BFSRequest,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.algorithms import GraphAlgorithms
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     return GraphAlgorithms().bfs_tree(G, req.source, max_depth=req.max_depth)
 
 
@@ -209,9 +275,14 @@ def run_bfs(req: BFSRequest) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/dfs", summary="DFS traversal from source node")
-def run_dfs(req: DFSRequest) -> Dict[str, Any]:
-    G = _get_graph()
+def run_dfs(
+    req: DFSRequest,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.algorithms import GraphAlgorithms
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     return GraphAlgorithms().dfs_tree(G, req.source, max_depth=req.max_depth)
 
 
@@ -220,9 +291,14 @@ def run_dfs(req: DFSRequest) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/dijkstra", summary="Dijkstra shortest path between two nodes")
-def run_dijkstra(req: DijkstraRequest) -> Dict[str, Any]:
-    G = _get_graph()
+def run_dijkstra(
+    req: DijkstraRequest,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.algorithms import GraphAlgorithms
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     return GraphAlgorithms().dijkstra_path(G, req.source, req.target, weight=req.weight)
 
 
@@ -231,9 +307,14 @@ def run_dijkstra(req: DijkstraRequest) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/blast-radius", summary="Blast radius analysis from a disrupted node")
-def run_blast_radius(req: BlastRadiusRequest) -> Dict[str, Any]:
-    G = _get_graph()
+def run_blast_radius(
+    req: BlastRadiusRequest,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.graph.builder import SupplyChainGraphBuilder
     from app.graph.algorithms import GraphAlgorithms
+    G = SupplyChainGraphBuilder().build_from_db(db, user_id=current_user.user_id)
     return GraphAlgorithms().blast_radius(G, req.disrupted_node, max_depth=req.max_depth)
 
 
@@ -366,4 +447,102 @@ async def rebuild_graph() -> Dict[str, Any]:
         }
     except Exception as e:
         logger.exception("rebuild_graph failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. POST /graph/rebuild-from-db — Full rebuild from all DB sources
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/rebuild-from-db", summary="Full graph rebuild from all database sources (risk + supplier portal)")
+async def rebuild_graph_from_db(
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    Comprehensive graph rebuild using all available data:
+      1. Risk assessments (same as /rebuild)
+      2. Supplier portal data via supplier_seeder (profiles, capacity, inventory)
+
+    Use this to immediately populate a Knowledge Graph on a fresh deployment
+    without needing to wait for a full orchestrator workflow run.
+    """
+    try:
+        from app.graph.snapshot import graph_store
+        from app.graph.supplier_seeder import seed_from_supplier_data
+
+        # Start with a fresh empty graph
+        G = nx.DiGraph()
+
+        # 1. Seed from supplier portal data first
+        try:
+            added = seed_from_supplier_data(G, db)
+            logger.info(f"[rebuild-from-db] Seeder added {added} nodes from supplier portal")
+        except Exception as exc:
+            logger.warning(f"[rebuild-from-db] Seeder skipped: {exc}")
+
+        # 2. Enrich with risk assessment data
+        from app.db.supabase_client import get_supabase
+        from app.graph.builder import SupplyChainGraphBuilder
+        from app.graph.algorithms import GraphAlgorithms
+        from app.graph.blast_radius import BlastRadiusAnalyzer
+        from app.graph.serializer import ReactFlowSerializer
+
+        try:
+            sb = get_supabase()
+            res = (
+                sb.table("risk_assessments")
+                .select("assessment_id,risk_score,risk_level,title,event_type,countries,industries")
+                .order("assessed_at", desc=True)
+                .limit(200)
+                .execute()
+            )
+            risk_rows = res.data or []
+
+            if risk_rows:
+                risk_data = [
+                    {
+                        "assessment_id": r.get("assessment_id"),
+                        "risk_score":    r.get("risk_score"),
+                        "risk_level":    r.get("risk_level"),
+                        "title":         r.get("title"),
+                        "event_type":    r.get("event_type"),
+                        "countries":     r.get("countries") or [],
+                        "industries":    r.get("industries") or [],
+                    }
+                    for r in risk_rows
+                ]
+                # Merge risk nodes into existing supplier graph
+                risk_G = SupplyChainGraphBuilder().build(risk_assessments=risk_data)
+                for node_id, attrs in risk_G.nodes(data=True):
+                    if node_id not in G:
+                        G.add_node(node_id, **attrs)
+                for u, v, attrs in risk_G.edges(data=True):
+                    if not G.has_edge(u, v):
+                        G.add_edge(u, v, **attrs)
+        except Exception as exc:
+            logger.warning(f"[rebuild-from-db] Risk enrichment skipped: {exc}")
+
+        # 3. Compute stats & update store
+        algo       = GraphAlgorithms()
+        stats      = algo.graph_stats(G)
+        centrality = algo.degree_centrality(G)
+        rf_data    = ReactFlowSerializer().serialize(G)
+
+        snapshot = {
+            "execution_id": "rebuild_from_db",
+            "graph_stats":  stats,
+            "react_flow":   rf_data,
+            "centrality":   centrality,
+        }
+        await graph_store.update(G, "rebuild_from_db", snapshot)
+
+        return {
+            "success":    True,
+            "node_count": G.number_of_nodes(),
+            "edge_count": G.number_of_edges(),
+            "message":    f"Graph rebuilt from DB — {G.number_of_nodes()} nodes, {G.number_of_edges()} edges",
+        }
+
+    except Exception as e:
+        logger.exception("rebuild_graph_from_db failed")
         raise HTTPException(status_code=500, detail=str(e))
