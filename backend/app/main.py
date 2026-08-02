@@ -102,27 +102,37 @@ app = FastAPI(
 # e.g.  https://supply-shield-ai-seven.vercel.app,https://supply-shield-ai.vercel.app
 _allowed_origins: list[str] = []
 
-# Primary frontend URL
-if settings.FRONTEND_URL:
+import os as _os
+
+# Always include the known production Vercel frontend (hard-coded safety net)
+_PRODUCTION_ORIGINS = [
+    "https://supply-shield-ai-seven.vercel.app",
+    "https://supply-shield-ai.vercel.app",
+]
+for _prod in _PRODUCTION_ORIGINS:
+    _allowed_origins.append(_prod)
+
+# Primary frontend URL from env (may differ per environment)
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in _allowed_origins:
     _allowed_origins.append(settings.FRONTEND_URL)
 
 # Extra origins from env (handles preview deployments, custom domains, etc.)
-import os as _os
+# e.g. ADDITIONAL_CORS_ORIGINS=https://preview.vercel.app,https://staging.example.com
 _extra = _os.environ.get("ADDITIONAL_CORS_ORIGINS", "")
 for _o in _extra.split(","):
     _o = _o.strip()
     if _o and _o not in _allowed_origins:
         _allowed_origins.append(_o)
 
-# Dev: also allow local Vite ports
-if settings.ENVIRONMENT != "production":
-    for _local in [
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:5174", "http://127.0.0.1:5174",
-        "http://localhost:5175", "http://127.0.0.1:5175",
-    ]:
-        if _local not in _allowed_origins:
-            _allowed_origins.append(_local)
+# Always allow local Vite dev ports regardless of environment
+for _local in [
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:5174", "http://127.0.0.1:5174",
+    "http://localhost:5175", "http://127.0.0.1:5175",
+    "http://localhost:3000", "http://127.0.0.1:3000",
+]:
+    if _local not in _allowed_origins:
+        _allowed_origins.append(_local)
 
 logger.info(f"[cors] Allowed origins: {_allowed_origins}")
 
@@ -130,28 +140,53 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
     expose_headers=["*"],
+    max_age=600,
 )
 
 # ── Fallback CORS middleware ───────────────────────────────────────────────────
 # Starlette's CORSMiddleware does NOT add headers when the app crashes with
 # an unhandled 500 before the route executes, or when Render's proxy returns
-# 502/503 during startup. This low-level middleware ensures the header is
-# always present so browsers show the real error instead of a generic CORS block.
+# 502/503 during startup. This low-level middleware handles OPTIONS preflight
+# directly (returning 200 immediately) and also patches response headers so
+# browsers always see CORS headers even on error responses.
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 class FallbackCORSMiddleware(BaseHTTPMiddleware):
+    _CORS_HEADERS = {
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
     async def dispatch(self, request: StarletteRequest, call_next):
         origin = request.headers.get("origin", "")
+
+        # Short-circuit OPTIONS preflight — never reaches the route handler
+        # This handles 502 scenarios where Render's proxy kills the connection
+        if request.method == "OPTIONS" and origin in _allowed_origins:
+            return StarletteResponse(
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    **self._CORS_HEADERS,
+                },
+            )
+
         response: StarletteResponse = await call_next(request)
+
+        # Patch CORS headers on all responses from allowed origins
         if origin in _allowed_origins:
-            response.headers.setdefault("Access-Control-Allow-Origin", origin)
-            response.headers.setdefault("Access-Control-Allow-Credentials", "true")
-            response.headers.setdefault("Vary", "Origin")
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+
         return response
 
 app.add_middleware(FallbackCORSMiddleware)
