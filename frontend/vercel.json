@@ -7,6 +7,10 @@
   "installCommand": "npm install",
   "rewrites": [
     {
+      "source": "/api/v1/:path*",
+      "destination": "https://supplyshield-backend-m5k9.onrender.com/api/v1/:path*"
+    },
+    {
       "source": "/((?!api/.*).*)",
       "destination": "/index.html"
     }
